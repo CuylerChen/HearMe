@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HearMe voice lab</title>
+  <style>
+    body { font: 16px/1.5 sans-serif; margin: 2rem; max-width: 40rem; }
+    code { font-family: ui-monospace, monospace; }
+    .note { color: #444; }
+  </style>
+</head>
+<body>
+  <h1>HearMe voice lab</h1>
+  <p class="note">This page is a loopback client for the voice API. The product web app and mobile app are separate.</p>
+  <p>Bind <code>127.0.0.1:18200</code>. Conversation language strategy: auto. Launch languages: en, zh-CN, ja, ko, es, fr.</p>
+  <pre id="out">loading</pre>
+  <script>
+    const out = document.getElementById("out");
+    fetch("/v1/languages").then(async (res) => {
+      out.textContent = res.status + "\n" + await res.text();
+    }).catch((err) => {
+      out.textContent = String(err);
+    });
+  </script>
+</body>
+</html>

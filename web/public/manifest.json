@@ -1,0 +1,9 @@
+{
+  "name": "HearMe",
+  "short_name": "HearMe",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8F7F4",
+  "theme_color": "#526B61",
+  "description": "HearMe is a private, voice-first place to be heard. It does not keep recordings or transcripts, and it is not therapy."
+}

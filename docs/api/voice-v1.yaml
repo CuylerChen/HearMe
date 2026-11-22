@@ -1,0 +1,69 @@
+openapi: 3.0.3
+info:
+  title: HearMe Voice API
+  version: 1.0.0
+  description: |
+    Loopback voice API. Bind is 127.0.0.1:18200.
+    Status responses never include transcripts, reply text, or detection history.
+servers:
+  - url: http://127.0.0.1:18200
+paths:
+  /healthz:
+    get:
+      summary: Process health
+      responses:
+        "200":
+          description: OK
+  /v1/languages:
+    get:
+      summary: Launch languages
+      responses:
+        "200":
+          description: en, zh-CN, ja, ko, es, fr
+  /v1/voices:
+    get:
+      summary: Voice catalog
+      responses:
+        "200":
+          description: Four HearMe voices, disabled until quality passes
+  /v1/sessions:
+    post:
+      summary: Create a voice session
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversation_language_mode:
+                  type: string
+                  enum: [auto, preferred]
+                preferred_conversation_locale:
+                  type: string
+                  nullable: true
+                voice_key:
+                  type: string
+      responses:
+        "201":
+          description: Session created, no dialogue content
+  /v1/sessions/{id}:
+    get:
+      summary: Session status without dialogue
+    delete:
+      summary: Close the session and drop in-memory language state
+  /v1/sessions/{id}/turns:
+    post:
+      summary: Submit 16 kHz PCM and receive NDJSON audio chunks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pcm16k_b64:
+                  type: string
+  /v1/sessions/{id}/interrupt:
+    post:
+      summary: Stop the current reply

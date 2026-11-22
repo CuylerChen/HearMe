@@ -1,0 +1,45 @@
+#!/bin/bash
+# Stop HearMe realtime processes. Match the command line, because the venv
+# Python executable resolves to /usr/bin/python3.10.
+set -u
+PREFIX=/bigdata/hearme-ai
+
+should_stop() {
+  local cmd="$1"
+  case "$cmd" in
+    *workers.asr_worker*|*workers.llm_worker*|*workers.tts_worker*|*workers.vad_worker*|*hearme-gateway*)
+      case "$cmd" in
+        *"$PREFIX"/*) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+stop_matching() {
+  local signal="$1"
+  for pid_path in /proc/[0-9]*; do
+    local pid cmd
+    pid=${pid_path#/proc/}
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    if should_stop "$cmd"; then
+      kill "$signal" "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+if [[ -d "$PREFIX/tmp/realtime" ]]; then
+  for pid_file in "$PREFIX"/tmp/realtime/*.pid; do
+    [[ -f "$pid_file" ]] || continue
+    pid=$(cat "$pid_file" 2>/dev/null || true)
+    if [[ -n "${pid:-}" ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+fi
+stop_matching -TERM
+sleep 2
+stop_matching -KILL
+sleep 1
+rm -rf "$PREFIX/tmp/realtime"
+echo "REALTIME_DOWN"

@@ -1,0 +1,49 @@
+#!/bin/bash
+# Start HearMe voice workers and the loopback gateway. Does not touch system services.
+set -euo pipefail
+PREFIX=/bigdata/hearme-ai
+"$PREFIX/bin/gpu-guard.sh"
+mkdir -p "$PREFIX/tmp/realtime" "$PREFIX/reports/realtime" "$PREFIX/logs"
+export HEARME_PREFIX="$PREFIX"
+export PYTHONPATH="$PREFIX/realtime"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_HOME="$PREFIX/cache/huggingface"
+export HUGGINGFACE_HUB_CACHE="$PREFIX/cache/huggingface/hub"
+export TORCH_HOME="$PREFIX/cache/torch"
+export XDG_CACHE_HOME="$PREFIX/cache"
+export TMPDIR="$PREFIX/tmp"
+export TRITON_CACHE_DIR="$PREFIX/cache/triton"
+export GOCACHE="$PREFIX/cache/go-build"
+export GOMODCACHE="$PREFIX/cache/go-mod"
+export GOTELEMETRY=off
+mkdir -p "$TRITON_CACHE_DIR" "$GOCACHE" "$GOMODCACHE" "$TMPDIR"
+cd "$PREFIX/realtime"
+
+start_py() {
+  local name="$1"
+  local python="$2"
+  local module="$3"
+  nice -n 19 ionice -c 3 "$python" -m "$module" >>"$PREFIX/logs/${name}.log" 2>&1 &
+  echo $! >"$PREFIX/tmp/realtime/${name}.pid"
+}
+
+if [[ -x "$PREFIX/bin/hearme-gateway" ]] && ! ss -ltn | grep -q '127.0.0.1:18200'; then
+  nice -n 19 "$PREFIX/bin/hearme-gateway" >>"$PREFIX/logs/gateway.log" 2>&1 &
+  echo $! >"$PREFIX/tmp/realtime/gateway.pid"
+fi
+
+start_py vad "$PREFIX/venv/bin/python" workers.vad_worker || true
+start_py asr "$PREFIX/venv/bin/python" workers.asr_worker
+start_py llm "$PREFIX/venv-llm/bin/python" workers.llm_worker
+start_py tts "$PREFIX/venv/bin/python" workers.tts_worker
+
+for _ in $(seq 1 180); do
+  if [[ -S "$PREFIX/tmp/realtime/asr.sock" && -S "$PREFIX/tmp/realtime/llm.sock" && -S "$PREFIX/tmp/realtime/tts.sock" ]]; then
+    echo "REALTIME_UP"
+    exit 0
+  fi
+  sleep 1
+done
+echo "REALTIME_UP_TIMEOUT"
+exit 1

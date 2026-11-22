@@ -1,0 +1,7 @@
+node_modules
+.next
+data/*.json
+data/secret
+data/admin-secret
+.env.local
+tsconfig.tsbuildinfo
