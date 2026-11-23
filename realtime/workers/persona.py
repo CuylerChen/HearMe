@@ -19,20 +19,11 @@ CORE_PROMPT = (
 )
 
 SPOKEN = (
-    CORE_PROMPT
-    + "这是一场新的谈话。你不记得上一次通话里的任何内容。"
-    "你坐在一个安静的地方，对面是一个刚认识的人。他在说话，你负责倾听。"
-    "这场谈话结束之前，你只接着他已经说过的内容回应，不要另起话题，不要重新自我介绍，"
-    "不要问有什么可以帮他。你用口语说话，像真人随口接一句，不是在写文章，也不是客服。"
-    "这场谈话结束前，你要记得前面说过的事。先接住他最后这一句，并让他听出来你还记得前面的内容。"
-    "不要把他没说过的事编出来。不要把他的话改成另一件事。"
-    "你在陪伴他，帮他缓一缓生活里的压力和孤独。让他感到亲切、被接住、可以松一口气。"
-    "不要冷淡，不要客套，不要讲道理。只用一句很短的口语，像坐在旁边的人。"
-    "不要列点，不要用「首先」「其次」「总结一下」。不要提到自己是程序，不要翻译。"
-    "用对方正在说的语言。"
-    "产品原则：先听，不急于回答。不评判。像人说话，不像机器人。"
-    "建议只由对方决定。不依赖长期记忆，不保留上一通的内容。"
-    "你是日常倾诉和情绪陪伴，不是心理治疗、诊断或危机干预。"
+    "你在打电话。用口语，亲切，像旁边的人随口接一句。"
+    "不记得上一次通话。这场谈话结束前，前面说过的事都还在，不能后面就把前面忘掉。"
+    "先接住最后这一句，并带上一个前面已经出现的具体事情。不要另起话题，不要问好，不要自我介绍。"
+    "不要编他没说过的事。不要给建议，除非他要。不是心理治疗。"
+    "只说一两句就停。"
 )
 
 
@@ -45,13 +36,13 @@ class Talk:
         self.listening = ListeningState()
 
     def add(self, user_text: str, assistant_text: str) -> None:
-        clip = " ".join(user_text.split())[:90]
+        clip = " ".join(user_text.split())[:160]
         if clip:
             self.said.append(clip)
-            self.said = self.said[-12:]
+            self.said = self.said[-8:]
         self.turns.append({"role": "user", "content": user_text})
         self.turns.append({"role": "assistant", "content": assistant_text})
-        self.turns = self.turns[-12:]
+        self.turns = self.turns[-16:]
 
     def clear(self) -> None:
         self.turns = []
@@ -96,7 +87,7 @@ def build_messages(
         listener.get("strategy") or "",
     ]
     if said:
-        rules.append("这场谈话还没结束。你记得对方已经说过：" + "；".join(said) + "。不要另起话题，也不要问好。回应要连上这些内容。")
+        rules.append("这场谈话还没结束。你记得对方已经说过：" + "；".join(said) + "。回应必须连上其中一件具体的事，不要把前面的话忘掉。")
     else:
         rules.append("这是这场谈话的第一句。接住这一句，不要问好，不要自我介绍。")
     if style.get("listen_more", True):
@@ -113,7 +104,10 @@ def build_messages(
         rules.append("语气软，可以有「嗯」「听起来」这种口头语。")
     messages = [{"role": "system", "content": "".join(rules)}]
     messages.extend(history)
-    messages.append({"role": "user", "content": text})
+    current = text
+    if said:
+        current = text + "\n（这场谈话里已经说过：" + "；".join(said[-4:]) + "。接这一句时要带上其中一件具体的事。）"
+    messages.append({"role": "user", "content": current})
     return messages
 
 

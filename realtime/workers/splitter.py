@@ -7,7 +7,7 @@ text. Audio chunks come from calling synthesis once per fragment emitted here.
 STOPS = set("。！？!?")
 SOFT = set("，、,")
 MIN_FRAGMENT = 4
-SOFT_LIMIT = 20
+SOFT_LIMIT = 8
 
 
 def _segments(text: str) -> tuple[list[str], str]:

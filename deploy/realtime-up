@@ -28,6 +28,10 @@ start_py() {
   echo $! >"$PREFIX/tmp/realtime/${name}.pid"
 }
 
+if [[ -f "$PREFIX/etc/api.key" ]]; then
+  HEARME_API_KEY="$(tr -d '[:space:]' <"$PREFIX/etc/api.key")"
+  export HEARME_API_KEY
+fi
 if [[ -x "$PREFIX/bin/hearme-gateway" ]] && ! ss -ltn | grep -q '127.0.0.1:18200'; then
   nice -n 19 "$PREFIX/bin/hearme-gateway" >>"$PREFIX/logs/gateway.log" 2>&1 &
   echo $! >"$PREFIX/tmp/realtime/gateway.pid"

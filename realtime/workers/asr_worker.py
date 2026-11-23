@@ -10,8 +10,7 @@ import numpy as np
 import torch
 from qwen_asr import Qwen3ASRModel
 
-from workers.asr_protocol import CancelGate, encode_final, encode_partial
-from workers.asr_stream import StreamingSession
+from workers.asr_protocol import CancelGate, encode_final
 from workers.common import model_dir, sock_path
 from workers.pcmutil import b64_to_int16
 from workers.sockjson import serve
@@ -42,6 +41,58 @@ def _language(value):
     return text
 
 
+class LiveAsr:
+    """One call. Transcribe while the person is still talking, then reuse that text."""
+
+    def __init__(self, model, language):
+        self.model = model
+        self.language = language
+        self.audio = np.zeros((0,), dtype=np.float32)
+        self.covered = 0
+        self.text = ""
+        self.detected = language or ""
+
+    def _float(self, pcm_int16: np.ndarray) -> np.ndarray:
+        audio = np.asarray(pcm_int16).reshape(-1)
+        if audio.size == 0:
+            return audio
+        if audio.dtype == np.int16:
+            return audio.astype(np.float32) / 32768.0
+        return audio.astype(np.float32, copy=False)
+
+    def push(self, pcm_int16: np.ndarray) -> None:
+        audio = self._float(pcm_int16)
+        if audio.size == 0:
+            return
+        if audio.shape[0] >= self.audio.shape[0]:
+            self.audio = audio
+
+    def append(self, pcm_int16: np.ndarray) -> None:
+        audio = self._float(pcm_int16)
+        if audio.size == 0:
+            return
+        self.audio = np.concatenate([self.audio, audio])
+
+    def refresh(self, force: bool = False) -> None:
+        pending = int(self.audio.shape[0] - self.covered)
+        if self.audio.shape[0] == 0:
+            self.text = ""
+            return
+        # A finished turn should answer from what was already heard.
+        if force and self.text:
+            return
+        if not force and pending < 12000:
+            return
+        window = self.audio[-6 * 16000 :]
+        results = self.model.transcribe((window, 16000), language=self.language)
+        if not results:
+            return
+        item = results[0]
+        self.text = getattr(item, "text", "") or ""
+        self.detected = getattr(item, "language", None) or self.language or ""
+        self.covered = int(self.audio.shape[0])
+
+
 def on_message(message, send) -> None:
     session_id = message.get("session_id", "")
     kind = message.get("type")
@@ -56,24 +107,24 @@ def on_message(message, send) -> None:
     pcm = b64_to_int16(message.get("pcm16k_b64", ""))
     with LOCK:
         state = SESSIONS.get(session_id)
-        if state is None or state.language != language:
-            state = StreamingSession(MODEL, language)
-            state.start()
+        if not isinstance(state, LiveAsr) or state.language != language:
+            state = LiveAsr(MODEL, language)
             SESSIONS[session_id] = state
         if pcm.size:
-            state.push_pcm16(pcm)
+            if message.get("append"):
+                state.append(pcm)
+            else:
+                state.push(pcm)
         if message.get("final"):
-            state.finish()
+            state.refresh(force=True)
             text = state.text
-            detected = state.detected_language or language or ""
+            detected = state.detected or language or ""
             SESSIONS.pop(session_id, None)
             if GATE.allow(session_id):
                 send(encode_final(session_id, text, detected))
             return
-        partial = encode_partial(session_id, state.text, state.detected_language or language or "")
-        filtered = GATE.filter_partial(partial)
-        if filtered:
-            send(filtered)
+        state.refresh(force=False)
+        send({"type": "partial", "session_id": session_id})
 
 
 def main() -> None:

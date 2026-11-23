@@ -28,9 +28,12 @@ class ASRStreamFallbackTest(unittest.TestCase):
         session.start()
         self.assertEqual(session.backend, "transformers_chunked_transcribe")
         session.push_pcm16(np.zeros(8000, dtype=np.int16))
+        session.push_pcm16(np.zeros(8000, dtype=np.int16))
+        session.push_pcm16(np.zeros(8000, dtype=np.int16))
+        self.assertEqual(model.calls, 0)
         session.finish()
         self.assertEqual(session.text, "今天")
-        self.assertGreaterEqual(model.calls, 1)
+        self.assertEqual(model.calls, 1)
 
 
 if __name__ == "__main__":

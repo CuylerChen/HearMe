@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +36,7 @@ type TurnEvent struct {
 	Audio      []byte
 }
 
-type Turner func(sessionID string, pcm []byte, emit func(TurnEvent) error) error
+type Turner func(sessionID string, pcm []byte, appendAudio bool, emit func(TurnEvent) error) error
 
 type TurnStyle struct {
 	VoiceKey     string
@@ -50,14 +54,38 @@ type TurnStyle struct {
 type Server struct {
 	mu          sync.Mutex
 	sessions    map[string]*sessionView
-	Turn        Turner
+	Turn        func(sessionID string, pcm []byte, appendAudio bool, emit func(TurnEvent) error) error
 	OnInterrupt func(sessionID string)
 	OnStyle     func(sessionID string, style TurnStyle)
 	OnForget    func(sessionID string)
+	OnFeed      func(sessionID string, pcm []byte)
 }
 
 func New() *Server {
 	return &Server{sessions: map[string]*sessionView{}}
+}
+
+func Protect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := os.Getenv("HEARME_API_KEY")
+		if key == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := r.Header.Get("X-Api-Key")
+		if got == "" {
+			const prefix = "Bearer "
+			auth := r.Header.Get("Authorization")
+			if strings.HasPrefix(auth, prefix) {
+				got = strings.TrimPrefix(auth, prefix)
+			}
+		}
+		if subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Handler() http.Handler {
@@ -68,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions", s.createSession)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.sessionStatus)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.deleteSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/partial", s.partial)
 	mux.HandleFunc("POST /v1/sessions/{id}/turns", s.turn)
 	mux.HandleFunc("POST /v1/sessions/{id}/interrupt", s.interrupt)
 	return mux
@@ -162,6 +191,30 @@ func (s *Server) sessionStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessionJSON(view))
 }
 
+func (s *Server) partial(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.get(id) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
+		return
+	}
+	var req struct {
+		PCM string `json:"pcm16k_b64"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_json"})
+		return
+	}
+	pcm, err := base64.StdEncoding.DecodeString(req.PCM)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_pcm"})
+		return
+	}
+	if s.OnFeed != nil && len(pcm) > 0 {
+		s.OnFeed(id, pcm)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.get(id) == nil {
@@ -174,6 +227,8 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		PCM          string `json:"pcm16k_b64"`
+		Tail         string `json:"tail_b64"`
+		UseBuffer    bool   `json:"use_buffer"`
 		VoiceKey     string `json:"voice_key"`
 		ListenMore   *bool  `json:"listen_more"`
 		AskQuestions *bool  `json:"ask_questions"`
@@ -189,6 +244,10 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_json"})
 		return
 	}
+	encoded := req.PCM
+	if req.UseBuffer {
+		encoded = req.Tail
+	}
 	if s.OnStyle != nil {
 		s.OnStyle(id, TurnStyle{
 			VoiceKey:     req.VoiceKey,
@@ -203,14 +262,43 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 			SpeakerEn:    req.SpeakerEn,
 		})
 	}
-	pcm, err := base64.StdEncoding.DecodeString(req.PCM)
-	if err != nil {
+	pcm, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || (len(pcm) == 0 && !req.UseBuffer) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_pcm"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store, no-transform")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	var writeMu sync.Mutex
+	write := func(line map[string]any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if err := writeLine(w, line); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		_ = write(map[string]any{"type": "status", "state": "working"})
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = write(map[string]any{"type": "status", "state": "working"})
+			}
+		}
+	}()
 	emit := func(ev TurnEvent) error {
 		line := map[string]any{
 			"type":       "audio",
@@ -224,19 +312,13 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 			line["sample_rate"] = ev.SampleRate
 			line["audio_b64"] = base64.StdEncoding.EncodeToString(ev.Audio)
 		}
-		if err := writeLine(w, line); err != nil {
-			return err
-		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-		return nil
+		return write(line)
 	}
-	if err := s.Turn(id, pcm, emit); err != nil {
-		_ = writeLine(w, map[string]any{"type": "error", "error": "voice_turn_failed"})
+	if err := s.Turn(id, pcm, req.UseBuffer, emit); err != nil {
+		_ = write(map[string]any{"type": "error", "error": "voice_turn_failed"})
 		return
 	}
-	_ = writeLine(w, map[string]any{"type": "done", "session_id": id})
+	_ = write(map[string]any{"type": "done", "session_id": id})
 }
 
 func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {

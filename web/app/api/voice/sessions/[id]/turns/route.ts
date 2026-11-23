@@ -1,4 +1,4 @@
-import { voiceBase } from "@/lib/http";
+import { voiceBase, voiceHeaders } from "@/lib/http";
 import { listenerFor, listenerManner, listenerName } from "@/lib/listeners";
 import { readSessionUser } from "@/lib/store";
 
@@ -12,9 +12,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const locale = prefs.interfaceLocale;
   const upstream = await fetch(`${voiceBase()}/v1/sessions/${id}/turns`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: voiceHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({
-      pcm16k_b64: incoming.pcm16k_b64,
+      pcm16k_b64: incoming.use_buffer ? "" : incoming.pcm16k_b64,
+      tail_b64: incoming.tail_b64 || "",
+      use_buffer: Boolean(incoming.use_buffer),
       voice_key: person.voiceKey,
       listen_more: prefs.listenMore,
       ask_questions: prefs.askQuestions,
@@ -30,6 +32,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!upstream) return Response.json({ error: "voice_unavailable" }, { status: 503 });
   return new Response(upstream.body, {
     status: upstream.status,
-    headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/x-ndjson",
+      "cache-control": "no-store, no-transform",
+      "x-accel-buffering": "no",
+    },
   });
 }

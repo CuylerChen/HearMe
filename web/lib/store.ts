@@ -10,6 +10,7 @@ type UserRecord = {
   email: string;
   passwordHash: string;
   passwordSalt: string;
+  createdAt?: string;
   preferences: Preferences;
 };
 
@@ -71,6 +72,22 @@ export function verifyPassword(password: string, salt: string, hash: string) {
   return prev.length === next.length && timingSafeEqual(prev, next);
 }
 
+export function listAccounts() {
+  const db = readDb();
+  const online = new Set(db.sessions.map((session) => session.userId));
+  return db.users
+    .map((user) => ({
+      email: user.email,
+      createdAt: user.createdAt || "",
+      interfaceLocale: user.preferences?.interfaceLocale || "",
+      voiceKey: user.preferences?.voiceKey || "",
+      onboardingDone: Boolean(user.preferences?.onboardingDone),
+      online: online.has(user.id),
+      moodDays: db.moods.filter((mood) => mood.userId === user.id).length,
+    }))
+    .sort((a, b) => a.email.localeCompare(b.email));
+}
+
 export function publicUser(user: UserRecord): PublicUser {
   return { id: user.id, email: user.email, preferences: user.preferences };
 }
@@ -95,6 +112,7 @@ export function signup(email: string, password: string, locale: Locale) {
     const user: UserRecord = {
       id: randomBytes(16).toString("hex"),
       email: normalized,
+      createdAt: new Date().toISOString(),
       passwordHash: hash,
       passwordSalt: salt,
       preferences: defaultPreferences(locale),

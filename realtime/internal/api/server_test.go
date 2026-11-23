@@ -8,6 +8,23 @@ import (
     "testing"
 )
 
+func TestAPIKeyRequiredWhenSet(t *testing.T) {
+	t.Setenv("HEARME_API_KEY", "test-key")
+	handler := Protect(New().Handler())
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/languages", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing key status %d", rec.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/languages", nil)
+	req.Header.Set("X-Api-Key", "test-key")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid key status %d", rec.Code)
+	}
+}
+
 func TestListenAddrIsLoopback(t *testing.T) {
     if ListenAddr != "127.0.0.1:18200" {
         t.Fatalf("listen addr %s", ListenAddr)
@@ -106,7 +123,7 @@ func TestVoicesStayDisabledUntilQualityPass(t *testing.T) {
 
 func TestTurnAudioDoesNotStickToStatus(t *testing.T) {
 	srv := New()
-	srv.Turn = func(sessionID string, pcm []byte, emit func(TurnEvent) error) error {
+	srv.Turn = func(sessionID string, pcm []byte, _ bool, emit func(TurnEvent) error) error {
 		return emit(TurnEvent{Locale: "en", SampleRate: 24000, LatencyMs: 10, Audio: []byte{1, 2, 3, 4}})
 	}
 	create := httptest.NewRecorder()

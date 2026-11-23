@@ -2,6 +2,16 @@
 
 import { FormEvent, useEffect, useState } from "react";
 
+type Account = {
+  email: string;
+  createdAt: string;
+  interfaceLocale: string;
+  voiceKey: string;
+  onboardingDone: boolean;
+  online: boolean;
+  moodDays: number;
+};
+
 type Summary = {
   days: number;
   visitors: number;
@@ -17,6 +27,13 @@ type Summary = {
   funnel: { id: string; label: string; visitors: number; fromStart: number; fromPrevious: number }[];
   rates: { signupFromLanding: number; callFromSignup: number; endFromCall: number };
   hints: string[];
+};
+
+const voiceLabels: Record<string, string> = {
+  gentle: "温和",
+  calm: "平静",
+  warm: "温暖",
+  thoughtful: "沉稳",
 };
 
 const clickLabels: Record<string, string> = {
@@ -36,6 +53,7 @@ export default function AdminPage() {
   const [authed, setAuthed] = useState(false);
   const [days, setDays] = useState(7);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
@@ -47,6 +65,11 @@ export default function AdminPage() {
       return;
     }
     setSummary(await response.json());
+    const accountsResponse = await fetch("/api/admin/accounts");
+    if (accountsResponse.ok) {
+      const body = await accountsResponse.json();
+      setAccounts(body.accounts || []);
+    }
     setAuthed(true);
     setReady(true);
   }
@@ -77,6 +100,7 @@ export default function AdminPage() {
     await fetch("/api/admin/logout", { method: "POST" });
     setAuthed(false);
     setSummary(null);
+    setAccounts([]);
   }
 
   if (!ready) return <main className="admin"><p>正在读取统计。</p></main>;
@@ -116,6 +140,37 @@ export default function AdminPage() {
         </div>
       </header>
       <p className="help">这些数字用来看页面结构和转化。不包含录音、文字或回复。</p>
+      <section className="admin-card">
+        <h2>账号 · {accounts.length}</h2>
+        {accounts.length ? (
+          <table>
+            <thead>
+              <tr>
+                <th>邮箱</th>
+                <th>注册时间</th>
+                <th>界面语言</th>
+                <th>声音</th>
+                <th>引导</th>
+                <th>在线</th>
+                <th>心情天数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((account) => (
+                <tr key={account.email}>
+                  <td>{account.email}</td>
+                  <td>{account.createdAt ? account.createdAt.slice(0, 16).replace("T", " ") : "—"}</td>
+                  <td>{account.interfaceLocale || "—"}</td>
+                  <td>{voiceLabels[account.voiceKey] || account.voiceKey || "—"}</td>
+                  <td>{account.onboardingDone ? "已完成" : "未完成"}</td>
+                  <td>{account.online ? "在线" : "离线"}</td>
+                  <td>{account.moodDays}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p className="help">还没有账号。</p>}
+      </section>
       <section className="stat-grid">
         <article><span>访客</span><strong>{summary.visitors}</strong></article>
         <article><span>页面浏览</span><strong>{summary.pageViews}</strong></article>

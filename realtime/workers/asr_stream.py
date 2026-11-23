@@ -55,7 +55,6 @@ class StreamingSession:
             return
         if audio.size:
             self.buffer = np.concatenate([self.buffer, audio])
-        self._consume(flush_tail=False)
 
     def finish(self) -> None:
         if self._state is not None:
@@ -63,28 +62,20 @@ class StreamingSession:
             self.text = self._state.text or ""
             self.detected_language = self._state.language or self.detected_language
             return
-        self._consume(flush_tail=True)
-
-    def _consume(self, flush_tail: bool) -> None:
-        progressed = False
-        while self.buffer.shape[0] >= self.chunk_samples:
-            chunk = self.buffer[: self.chunk_samples]
-            self.buffer = self.buffer[self.chunk_samples :]
-            self.audio_accum = np.concatenate([self.audio_accum, chunk])
-            progressed = True
-            self._transcribe_accum()
-        if flush_tail and self.buffer.shape[0] > 0:
+        if self.buffer.shape[0] > 0:
             self.audio_accum = np.concatenate([self.audio_accum, self.buffer])
             self.buffer = np.zeros((0,), dtype=np.float32)
-            progressed = True
-            self._transcribe_accum()
-        if not progressed and flush_tail and self.audio_accum.shape[0] == 0:
-            self.text = ""
+        self._transcribe_once()
 
-    def _transcribe_accum(self) -> None:
-        if self.audio_accum.shape[0] == 0:
+    def _transcribe_once(self) -> None:
+        audio = self.audio_accum
+        max_samples = 20 * SAMPLE_RATE
+        if audio.shape[0] > max_samples:
+            audio = audio[-max_samples:]
+        if audio.shape[0] == 0:
+            self.text = ""
             return
-        results = self.model.transcribe((self.audio_accum, SAMPLE_RATE), language=self.language)
+        results = self.model.transcribe((audio, SAMPLE_RATE), language=self.language)
         if not results:
             return
         item = results[0]

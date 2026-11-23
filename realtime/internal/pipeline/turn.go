@@ -48,8 +48,29 @@ var (
 	activeRequest sync.Map
 )
 
-func Run(sessionID string, pcm []byte, emit func(AudioChunk) error) error {
+func Feed(sessionID string, pcm []byte) {
 	if len(pcm) == 0 || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	_, _ = exchange(sock("asr"), Message{
+		"type":       "audio",
+		"session_id": sessionID,
+		"pcm16k_b64": base64.StdEncoding.EncodeToString(pcm),
+		"language":   "",
+		"append":     true,
+		"final":      false,
+	}, 20*time.Second, "partial", "error")
+}
+
+func Run(sessionID string, pcm []byte, emit func(AudioChunk) error) error {
+	return RunTurn(sessionID, pcm, false, emit)
+}
+
+func RunTurn(sessionID string, pcm []byte, appendAudio bool, emit func(AudioChunk) error) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	if len(pcm) == 0 && !appendAudio {
 		return nil
 	}
 	started := time.Now()
@@ -59,6 +80,7 @@ func Run(sessionID string, pcm []byte, emit func(AudioChunk) error) error {
 		"session_id": sessionID,
 		"pcm16k_b64": base64.StdEncoding.EncodeToString(pcm),
 		"language":   "",
+		"append":     appendAudio,
 		"final":      true,
 	}, 45*time.Second, "final", "error")
 	if err != nil {

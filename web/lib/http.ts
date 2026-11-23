@@ -12,3 +12,10 @@ export function withSetCookie(response: Response, cookie: string | null) {
 export function voiceBase() {
   return process.env.VOICE_API_BASE || "http://127.0.0.1:18200";
 }
+
+export function voiceHeaders(extra: Record<string, string> = {}) {
+  const headers = { ...extra };
+  const key = process.env.VOICE_API_KEY;
+  if (key) headers["X-Api-Key"] = key;
+  return headers;
+}

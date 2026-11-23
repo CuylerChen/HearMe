@@ -18,6 +18,7 @@ func main() {
 	srv := api.New()
 	srv.OnInterrupt = pipeline.Interrupt
 	srv.OnForget = pipeline.Forget
+	srv.OnFeed = pipeline.Feed
 	srv.OnStyle = func(sessionID string, style api.TurnStyle) {
 		pipeline.RememberStyle(sessionID, pipeline.Style{
 			VoiceKey:     style.VoiceKey,
@@ -32,8 +33,8 @@ func main() {
 			SpeakerEn:    style.SpeakerEn,
 		})
 	}
-	srv.Turn = func(sessionID string, pcm []byte, emit func(api.TurnEvent) error) error {
-		return pipeline.Run(sessionID, pcm, func(chunk pipeline.AudioChunk) error {
+	srv.Turn = func(sessionID string, pcm []byte, appendAudio bool, emit func(api.TurnEvent) error) error {
+		return pipeline.RunTurn(sessionID, pcm, appendAudio, func(chunk pipeline.AudioChunk) error {
 			return emit(api.TurnEvent{
 				Locale:     chunk.Locale,
 				SampleRate: chunk.SampleRate,
@@ -44,7 +45,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:    api.ListenAddr,
-		Handler: withLabPage(srv.Handler()),
+		Handler: api.Protect(withLabPage(srv.Handler())),
 	}
 	log.Printf("event=listen bind=%s", api.ListenAddr)
 	if err := server.ListenAndServe(); err != nil {

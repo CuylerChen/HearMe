@@ -1,5 +1,5 @@
 import { recordFromRequest } from "@/lib/analytics";
-import { json, voiceBase, withSetCookie } from "@/lib/http";
+import { json, voiceBase, voiceHeaders, withSetCookie } from "@/lib/http";
 import { readSessionUser } from "@/lib/store";
 
 export async function POST(request: Request) {
@@ -8,7 +8,7 @@ export async function POST(request: Request) {
   const prefs = user.preferences;
   const upstream = await fetch(`${voiceBase()}/v1/sessions`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: voiceHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({
       conversation_language_mode: prefs.conversationLanguageMode,
       preferred_conversation_locale: prefs.preferredConversationLocale,

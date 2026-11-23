@@ -66,9 +66,9 @@ TEMPLATE_MARKS = (
 )
 
 MODE_TOKENS = {
-    "empathize": 28,
-    "listen": 32,
-    "explore": 36,
+    "empathize": 36,
+    "listen": 42,
+    "explore": 42,
     "support": 64,
     "gentle_presence": 24,
     "safety": 80,
@@ -147,7 +147,7 @@ class ListeningState:
         banned = "、".join(self.recent_patterns)
         extra = f"不要再用这些说法：{banned}。" if banned else ""
         return (
-            "不要急着解决。先让对方感到被听见，愿意继续说。"
+            "这一通电话里前面的具体事情还在。先让对方感到被听见，并连上前面说过的一件事。"
             "不要每次都用 It sounds like、What I'm hearing is、I understand how you feel、"
             "Thank you for sharing、听起来你、我理解你的感受。"
             + line

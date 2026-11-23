@@ -16,6 +16,9 @@ type Hold = {
   context: AudioContext | null;
   sources: AudioBufferSourceNode[];
   abort: AbortController | null;
+  partialAt: number;
+  uploadedSamples: number;
+  partialBusy: boolean;
   speakingFor: number;
   silenceFor: number;
   voiced: boolean;
@@ -45,6 +48,9 @@ export function VoiceSession() {
     context: null,
     sources: [],
     abort: null,
+    partialAt: 0,
+    uploadedSamples: 0,
+    partialBusy: false,
     speakingFor: 0,
     silenceFor: 0,
     voiced: false,
@@ -157,12 +163,16 @@ export function VoiceSession() {
         if (!live.voiced) setHearing(true);
         live.voiced = true;
         if (live.playing || live.status === "speaking") interrupt();
+        if (!live.partialBusy && live.speechMs - live.partialAt > 800) {
+          live.partialAt = live.speechMs;
+          sendPartial(merge(live.chunks), sampleRate);
+        }
       }
     } else if (live.voiced) {
       live.silenceFor += frameMs;
       live.speakingFor = 0;
       live.chunks.push(new Float32Array(input));
-      if (live.silenceFor > 700 && live.status === "listening" && live.speechMs >= 600) {
+      if (live.silenceFor > 320 && live.status === "listening" && live.speechMs >= 450) {
         const audio = merge(live.chunks);
         live.chunks = [];
         live.voiced = false;
@@ -171,7 +181,7 @@ export function VoiceSession() {
         setHearing(false);
         sendTurn(audio, sampleRate);
       }
-      if (live.silenceFor > 700 && live.speechMs < 600) {
+      if (live.silenceFor > 320 && live.speechMs < 450) {
         live.chunks = [];
         live.voiced = false;
         live.speechMs = 0;
@@ -181,16 +191,45 @@ export function VoiceSession() {
     }
   }
 
+  function sendPartial(audio: Float32Array, sampleRate: number) {
+    const id = hold.current.sessionId;
+    if (!id || hold.current.partialBusy) return;
+    const pcm = downsampleTo16k(audio, sampleRate);
+    const start = hold.current.uploadedSamples;
+    if (pcm.length - start < 6400) return;
+    const delta = pcm.subarray(start);
+    hold.current.partialBusy = true;
+    fetch(`/api/voice/sessions/${id}/partial`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pcm16k_b64: pcmToBase64(delta) }),
+    }).then((response) => {
+      if (response.ok) hold.current.uploadedSamples = pcm.length;
+    }).catch(() => undefined).finally(() => {
+      hold.current.partialBusy = false;
+    });
+  }
+
   async function sendTurn(audio: Float32Array, sampleRate: number) {
+    hold.current.partialAt = 0;
     const pcm = downsampleTo16k(audio, sampleRate);
     if (pcm.length < 1600) return;
+    const start = hold.current.uploadedSamples;
+    const useBuffer = start > 0;
+    const tail = useBuffer ? pcm.subarray(Math.min(start, pcm.length)) : pcm;
+    hold.current.uploadedSamples = 0;
     dispatch("speech_end");
     const controller = new AbortController();
     hold.current.abort = controller;
     const response = await fetch(`/api/voice/sessions/${hold.current.sessionId}/turns`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pcm16k_b64: pcmToBase64(pcm), listener_id: hold.current.listenerId }),
+      body: JSON.stringify({
+        pcm16k_b64: useBuffer ? "" : pcmToBase64(pcm),
+        tail_b64: useBuffer ? pcmToBase64(tail) : "",
+        use_buffer: useBuffer,
+        listener_id: hold.current.listenerId,
+      }),
       signal: controller.signal,
     }).catch(() => null);
     if (!response || !response.ok || !response.body) {
