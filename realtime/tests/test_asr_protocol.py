@@ -24,6 +24,13 @@ class ASRProtocolTest(unittest.TestCase):
         kept = gate.filter_partial(encode_partial("s2", "ok", "English"))
         self.assertEqual(kept["text"], "ok")
 
+    def test_reset_allows_next_turn_on_same_session(self):
+        gate = CancelGate()
+        gate.mark_cancelled("s1")
+        self.assertFalse(gate.allow("s1"))
+        gate.reset("s1")
+        self.assertTrue(gate.allow("s1"))
+
 
 if __name__ == "__main__":
     unittest.main()

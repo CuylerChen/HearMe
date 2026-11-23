@@ -15,8 +15,12 @@ export async function POST(request: Request) {
       voice_key: prefs.voiceKey,
     }),
   }).catch(() => null);
-  if (!upstream) return json({ error: "voice_unavailable" }, 503);
+  if (!upstream) {
+    console.log(JSON.stringify({ event: "voice_session", ok: false, status: 0 }));
+    return json({ error: "voice_unavailable" }, 503);
+  }
   const body = await upstream.json().catch(() => ({ error: "voice_unavailable" }));
+  console.log(JSON.stringify({ event: "voice_session", ok: upstream.ok, status: upstream.status, session: body.session_id || "" }));
   const visitor = upstream.ok
     ? await recordFromRequest(request, { type: "conversion", name: "session_start", path: "/session" })
     : null;

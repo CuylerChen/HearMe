@@ -53,7 +53,7 @@ func TestOneCallKeepsTheSamePersonAndVoice(t *testing.T) {
 	}
 }
 
-func TestSpokenSilenceStillGetsAPresence(t *testing.T) {
+func TestEmptyTranscriptDoesNotSpeakPresence(t *testing.T) {
 	root, err := os.MkdirTemp("/tmp", "hm")
 	if err != nil {
 		t.Fatal(err)
@@ -93,10 +93,10 @@ func TestSpokenSilenceStillGetsAPresence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if llmCalled {
-		t.Fatal("presence called the LLM")
+		t.Fatal("empty transcript called the LLM")
 	}
-	if spoken != "我在。" || got == 0 {
-		t.Fatalf("presence spoken=%q audio=%d", spoken, got)
+	if spoken != "" || got != 0 {
+		t.Fatalf("empty transcript spoke=%q audio=%d", spoken, got)
 	}
 }
 

@@ -7,6 +7,7 @@ chunk size and state.text contract and decodes with the installed
 transformers transcribe().
 """
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -67,6 +68,14 @@ class StreamingSession:
             self.buffer = np.zeros((0,), dtype=np.float32)
         self._transcribe_once()
 
+    def _apply(self, results) -> None:
+        if not results:
+            return
+        item = results[0]
+        if isinstance(item, SimpleNamespace) or hasattr(item, "text"):
+            self.text = item.text or ""
+            self.detected_language = getattr(item, "language", None) or self.language or ""
+
     def _transcribe_once(self) -> None:
         audio = self.audio_accum
         max_samples = 20 * SAMPLE_RATE
@@ -75,10 +84,23 @@ class StreamingSession:
         if audio.shape[0] == 0:
             self.text = ""
             return
-        results = self.model.transcribe((audio, SAMPLE_RATE), language=self.language)
-        if not results:
-            return
-        item = results[0]
-        if isinstance(item, SimpleNamespace) or hasattr(item, "text"):
-            self.text = item.text or ""
-            self.detected_language = getattr(item, "language", None) or self.language or ""
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+        self._apply(self.model.transcribe((audio, SAMPLE_RATE), language=self.language))
+        quiet = rms < 0.04 and peak < 0.15
+        if not (self.text or "").strip() and audio.shape[0] >= 8000 and quiet:
+            gain = min(4.0, 0.25 / max(peak, 1e-4))
+            boosted = np.clip(audio * gain, -1.0, 1.0)
+            self._apply(self.model.transcribe((boosted, SAMPLE_RATE), language=self.language or "Chinese"))
+        print(
+            json.dumps(
+                {
+                    "type": "asr_stat",
+                    "samples": int(audio.shape[0]),
+                    "rms": round(rms, 5),
+                    "peak": round(peak, 5),
+                    "empty": not bool((self.text or "").strip()),
+                }
+            ),
+            flush=True,
+        )

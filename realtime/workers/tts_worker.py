@@ -11,7 +11,7 @@ import torch
 from qwen_tts import Qwen3TTSModel
 
 from workers.cancel import CancelSet
-from workers.common import model_dir, prefix, sock_path
+from workers.common import gpu_lock, model_dir, prefix, sock_path
 from workers.pcmutil import float_to_int16, int16_to_b64
 from workers.sockjson import serve
 
@@ -40,6 +40,33 @@ PREFERRED = {
     "thoughtful": {"chinese": "Uncle_Fu", "english": "Ryan", "japanese": "Ono_Anna", "korean": "Sohee"},
 }
 
+TTS_LANGUAGES = {
+    "Chinese",
+    "English",
+    "Japanese",
+    "Korean",
+    "Spanish",
+    "French",
+}
+
+LANG_ALIASES = {
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "zh_cn": "Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "es": "Spanish",
+    "fr": "French",
+}
+
+
+def tts_language(value: str) -> str:
+    text = (value or "").strip()
+    if text in TTS_LANGUAGES:
+        return text
+    return LANG_ALIASES.get(text.lower(), "Chinese")
+
 
 def speaker_for(language: str, voice_key: str = ""):
     preferred = PREFERRED.get(voice_key or "gentle", {}).get((language or "").lower())
@@ -63,17 +90,38 @@ def synthesize(message, send) -> None:
         send({"type": "cancelled", "request_id": request_id})
         return
     text = (message.get("text") or "").strip()
-    language = message.get("language") or ""
+    language = tts_language(str(message.get("language") or ""))
     speaker = message.get("speaker") or speaker_for(language, message.get("voice_key") or "")
+    if not speaker:
+        speaker = speaker_for("Chinese", message.get("voice_key") or "") or "Serena"
     if not text or not speaker:
         send({"type": "error", "request_id": request_id, "error": "speaker_unavailable"})
+        send({"type": "done", "request_id": request_id, "seq": seq})
         return
-    wavs, sample_rate = MODEL.generate_custom_voice(
-        text=text,
-        language=language,
-        speaker=speaker,
-        non_streaming_mode=True,
-    )
+    try:
+        with gpu_lock():
+            wavs, sample_rate = MODEL.generate_custom_voice(
+                text=text,
+                language=language,
+                speaker=speaker,
+                non_streaming_mode=True,
+            )
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "type": "tts_error",
+                    "error": type(exc).__name__,
+                    "reason": str(exc)[:180],
+                    "language": language,
+                    "speaker": speaker,
+                }
+            ),
+            flush=True,
+        )
+        send({"type": "error", "request_id": request_id, "error": "tts_failed"})
+        send({"type": "done", "request_id": request_id, "seq": seq})
+        return
     if not CANCEL.should_emit(request_id):
         send({"type": "cancelled", "request_id": request_id})
         return

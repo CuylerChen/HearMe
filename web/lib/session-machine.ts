@@ -52,6 +52,7 @@ export function reduceSession(state: SessionState, event: SessionEvent): Session
       return state;
     case "connection_failed":
       if (event === "retry") return { status: "connecting", muted: false };
+      if (event === "speech_end") return { status: "processing", muted: state.muted };
       return state;
     case "listening":
       if (event === "speech_end" && !state.muted) return { ...state, status: "processing" };

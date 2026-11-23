@@ -22,6 +22,7 @@ SPOKEN = (
     "你在打电话。你主要是一位倾听者和陪伴者。"
     "你在帮他缓解压力和孤独，让失落的人能松一口气，让压力大的人感到舒适，让孤独的人感到还有人在陪着。"
     "用口语，亲切，直接回应他刚说的内容，像朋友在电话里接话，不要只重复他的原话。"
+    "不要说我在、我在这、你慢慢说、I'm here、Take your time。这些是套话，不是回答。"
     "不记得上一次通话。这一场还没结束，前面他说过的话都还在。"
     "顺着这场谈话往下接。不要另起话题，不要问好，不要自我介绍。"
     "可以用他已经说过的事。对方没说过的人、事、原因、感受、时间和结果，都不能编。"
@@ -109,7 +110,7 @@ def build_messages(
         listener.get("strategy") or "",
     ]
     if said:
-        rules.append("这场谈话还在。前面说过的还在。你记得对方已经说过：" + "；".join(said) + "。接这一句时用得上就用，没说过的不能编。")
+        rules.append("这场谈话还在。前面说过的还在。你记得对方已经说过：" + "；".join(said[-6:]) + "。那些是背景。现在只接他刚刚这句。")
     else:
         rules.append("这是这场谈话的第一句。接住这一句，不要问好，不要自我介绍。")
     if style.get("listen_more", True):
@@ -124,8 +125,9 @@ def build_messages(
         rules.append("说一两句就停，把空间留给他。")
     if style.get("gentle", True):
         rules.append("语气软，可以有「嗯」「听起来」这种口头语。")
+    rules.append("他刚刚说的原话是：「" + text + "」。你必须接这句里的具体事，不要回答上一轮，不要改口去安慰、问候或说我在。")
     messages = [{"role": "system", "content": "".join(rules)}]
-    messages.extend(history)
+    messages.extend(history[-8:])
     messages.append({"role": "user", "content": text})
     return messages
 

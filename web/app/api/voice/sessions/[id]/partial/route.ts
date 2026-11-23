@@ -11,6 +11,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     body: JSON.stringify({ pcm16k_b64: incoming.pcm16k_b64 }),
   }).catch(() => null);
   if (!upstream) return json({ error: "voice_unavailable" }, 503);
-  if (!upstream.ok) return json({ error: "voice_unavailable" }, upstream.status);
-  return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+  if (!upstream.ok && upstream.status !== 204) return json({ error: "voice_unavailable" }, upstream.status);
+  return json({ ok: true });
 }

@@ -26,6 +26,9 @@ class CancelGate:
     def mark_cancelled(self, session_id: str) -> None:
         self._cancelled.add(session_id)
 
+    def reset(self, session_id: str) -> None:
+        self._cancelled.discard(session_id)
+
     def allow(self, session_id: str) -> bool:
         return session_id not in self._cancelled
 

@@ -33,6 +33,7 @@ type Hold = {
   vadBusy: boolean;
   vadFailed: boolean;
   inSpeech: boolean;
+  turnSeq: number;
 };
 
 export function VoiceSession() {
@@ -70,6 +71,7 @@ export function VoiceSession() {
     vadBusy: false,
     vadFailed: false,
     inSpeech: false,
+    turnSeq: 0,
   });
 
   function dispatch(event: SessionEvent) {
@@ -159,7 +161,12 @@ export function VoiceSession() {
       return;
     }
     setNeedsTap(false);
-    await context.audioWorklet.addModule("/pcm-worklet.js");
+    try {
+      await context.audioWorklet.addModule("/pcm-worklet.js");
+    } catch {
+      setNotice(t.couldntConnect);
+      return;
+    }
     const source = context.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(context, "pcm-processor");
     const silent = context.createGain();
@@ -177,18 +184,6 @@ export function VoiceSession() {
     if (performance.now() < live.ignoreUntil) return;
     if (live.muted) return;
     if (live.status === "processing") {
-      const rms = Math.sqrt(frame.reduce((sum, sample) => sum + sample * sample, 0) / frame.length);
-      if (rms > 0.06) {
-        live.chunks.push(frame);
-        live.speechMs += frameMs;
-        live.speakingFor += frameMs;
-        live.silenceFor = 0;
-        if (live.speakingFor > 420) {
-          interrupt();
-          live.voiced = true;
-          setHearing(true);
-        }
-      }
       return;
     }
     if (live.playing || live.status === "speaking") {
@@ -201,28 +196,25 @@ export function VoiceSession() {
     live.vadQueued.push(frame);
     if (queuedMs(live.vadQueued, sampleRate) >= 100) pumpVad();
     const rms = Math.sqrt(frame.reduce((sum, sample) => sum + sample * sample, 0) / frame.length);
-    if (rms > 0.02) {
+    if (rms > 0.018) {
       live.silenceFor = 0;
       live.speakingFor += frameMs;
       live.speechMs += frameMs;
       live.chunks.push(frame);
-      if (live.speakingFor > 200) {
+      if (live.speakingFor > 180) {
         if (!live.voiced) setHearing(true);
         live.voiced = true;
       }
-      if (live.voiced && !live.partialBusy && live.speechMs - live.partialAt > 800) {
-        live.partialAt = live.speechMs;
-        sendPartial(merge(live.chunks), sampleRate);
-      }
+      if (live.voiced && live.speechMs >= 2500 && live.status === "listening") finishTurn();
       return;
     }
     live.speakingFor = 0;
     if (!live.voiced) return;
     live.silenceFor += frameMs;
     live.chunks.push(frame);
-    const waitMs = live.inSpeech ? 520 : 420;
+    const waitMs = live.inSpeech ? 480 : 380;
     if (live.silenceFor < waitMs) return;
-    if (live.speechMs >= 450 && live.status === "listening") finishTurn();
+    if (live.speechMs >= 400 && (live.status === "listening" || live.status === "connection_failed")) finishTurn();
     else dropTurn();
   }
 
@@ -277,88 +269,89 @@ export function VoiceSession() {
     });
   }
 
-  function sendPartial(audio: Float32Array, sampleRate: number) {
-    const id = hold.current.sessionId;
-    if (!id || hold.current.partialBusy) return;
-    const pcm = downsampleTo16k(audio, sampleRate);
-    const start = hold.current.uploadedSamples;
-    if (pcm.length - start < 6400) return;
-    const delta = pcm.subarray(start);
-    hold.current.partialBusy = true;
-    fetch(`/api/voice/sessions/${id}/partial`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pcm16k_b64: pcmToBase64(delta) }),
-    }).then((response) => {
-      if (response.ok) hold.current.uploadedSamples = pcm.length;
-    }).catch(() => undefined).finally(() => {
-      hold.current.partialBusy = false;
+  async function refreshSession() {
+    const created = await fetch("/api/voice/sessions", { method: "POST" }).catch(() => null);
+    if (!created || !created.ok) return "";
+    const body = await created.json().catch(() => ({}));
+    const id = String(body.session_id || "");
+    if (id) hold.current.sessionId = id;
+    return id;
+  }
+
+  async function postTurn(pcm: Int16Array, signal: AbortSignal) {
+    const body = JSON.stringify({
+      pcm16k_b64: pcmToBase64(pcm),
+      tail_b64: "",
+      use_buffer: false,
+      listener_id: hold.current.listenerId,
     });
+    const headers = { "content-type": "application/json" };
+    let id = hold.current.sessionId;
+    let response = await fetch(`/api/voice/sessions/${id}/turns`, { method: "POST", headers, body, signal }).catch(() => null);
+    if (response && response.status === 404) {
+      id = await refreshSession();
+      if (!id || signal.aborted) return null;
+      response = await fetch(`/api/voice/sessions/${id}/turns`, { method: "POST", headers, body, signal }).catch(() => null);
+    }
+    return response;
   }
 
   async function sendTurn(audio: Float32Array, sampleRate: number) {
     hold.current.partialAt = 0;
+    hold.current.uploadedSamples = 0;
     const pcm = downsampleTo16k(audio, sampleRate);
     if (pcm.length < 1600) return;
-    const start = hold.current.uploadedSamples;
-    const useBuffer = start > 0;
-    const tail = useBuffer ? pcm.subarray(Math.min(start, pcm.length)) : pcm;
-    hold.current.uploadedSamples = 0;
+    const seq = ++hold.current.turnSeq;
     dispatch("speech_end");
     const controller = new AbortController();
     hold.current.abort = controller;
-    const response = await fetch(`/api/voice/sessions/${hold.current.sessionId}/turns`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        pcm16k_b64: useBuffer ? "" : pcmToBase64(pcm),
-        tail_b64: useBuffer ? pcmToBase64(tail) : "",
-        use_buffer: useBuffer,
-        listener_id: hold.current.listenerId,
-      }),
-      signal: controller.signal,
-    }).catch(() => null);
-    if (!response || !response.ok || !response.body) {
-      if (controller.signal.aborted) return;
-      dispatch("connect_fail");
-      setNotice(t.serviceUnavailable);
-      return;
-    }
-    const context = hold.current.context;
-    if (context && context.state !== "running") await context.resume().catch(() => undefined);
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let started = false;
-    let failed = false;
-    while (true) {
-      const chunk = await reader.read().catch(() => ({ done: true, value: undefined }));
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let message: { type?: string; audio_b64?: string; sample_rate?: number };
-        try {
-          message = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (message.type === "error") failed = true;
-        if (message.type === "audio" && message.audio_b64 && hold.current.context) {
-          if (!started) {
-            started = true;
-            hold.current.ignoreUntil = performance.now() + 900;
-            dispatch("audio_start");
+    const timer = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await postTurn(pcm, controller.signal);
+      if (seq !== hold.current.turnSeq) return;
+      if (!response || !response.ok || !response.body) {
+        if (hold.current.status === "processing") dispatch("audio_end");
+        setNotice(t.missed);
+        return;
+      }
+      const context = hold.current.context;
+      if (context && context.state !== "running") await context.resume().catch(() => undefined);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let started = false;
+      let failed = false;
+      while (true) {
+        const chunk = await reader.read().catch(() => ({ done: true, value: undefined }));
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let message: { type?: string; audio_b64?: string; sample_rate?: number };
+          try {
+            message = JSON.parse(line);
+          } catch {
+            continue;
           }
-          play(base64ToPcm(message.audio_b64), message.sample_rate || 24000);
+          if (message.type === "error") failed = true;
+          if (message.type === "audio" && message.audio_b64 && hold.current.context) {
+            if (!started) {
+              started = true;
+              hold.current.ignoreUntil = performance.now() + 900;
+              dispatch("audio_start");
+            }
+            play(base64ToPcm(message.audio_b64), message.sample_rate || 24000);
+          }
         }
       }
-    }
-    if (!started) {
-      dispatch("audio_end");
-      if (failed || hold.current.status === "processing") setNotice(t.missed);
+      if (!started) {
+        dispatch("audio_end");
+        if (failed || hold.current.status === "processing") setNotice(t.missed);
+      }
+    } finally {
+      window.clearTimeout(timer);
     }
   }
 

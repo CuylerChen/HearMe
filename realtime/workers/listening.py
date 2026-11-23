@@ -60,9 +60,14 @@ TEMPLATE_MARKS = (
     "What I'm hearing is",
     "I understand how you feel",
     "Thank you for sharing",
+    "I'm here",
+    "Take your time",
     "听起来你",
     "我理解你的感受",
     "感谢你的分享",
+    "我在",
+    "你慢慢说",
+    "慢慢说",
 )
 
 MODE_TOKENS = {
@@ -79,7 +84,7 @@ MODE_LINES = {
     "listen": "这一轮用 Listen：顺着他正在说的事接一句，不要总结，不要提问，不要建议。",
     "explore": "这一轮用 Explore：只在自然的地方问一个开放问题，不要连问，不要建议。",
     "support": "这一轮用 Support：他在要帮助。给一个温和、具体、很小的建议，不要说教。",
-    "gentle_presence": "这一轮用 Gentle Presence：不要提问，不要推进话题。告诉他现在不必想清楚。",
+    "gentle_presence": "这一轮用 Gentle Presence：不要提问，不要推进话题。接住他刚说的那几个字，不要改口去说我在、你慢慢说。",
     "safety": (
         "SAFETY PROTOCOL. Do not use the normal listening prompt. "
         "The person may be at risk of harming themselves or someone else. "
@@ -151,6 +156,8 @@ class ListeningState:
             "帮他缓解压力和孤独，让失落的人松一口气，让压力大的人感到舒适，让孤独的人感到还有人在陪着。"
             "这场谈话里他前面说过的事还在。接这一句时不要把前面丢掉。"
             "只能使用他已经说过的事。他没说过的人、事、原因、感受和结果，都不能编。"
+            "禁止说：我在、我在这、你慢慢说、慢慢说、I'm here、Take your time、不必想清楚。"
+            "每一句都必须接住他刚刚说的具体内容，不能用陪伴套话代替回答。"
             "不要每次都用 It sounds like、What I'm hearing is、I understand how you feel、"
             "Thank you for sharing、听起来你、我理解你的感受。"
             + line

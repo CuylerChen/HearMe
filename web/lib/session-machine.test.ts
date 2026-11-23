@@ -48,3 +48,8 @@ test("connect failure can retry", () => {
   assert.equal(failed.status, "connection_failed");
   assert.equal(reduceSession(failed, "retry").status, "connecting");
 });
+
+test("a later turn can leave connection_failed", () => {
+  const failed = run(["request_permission", "permission_granted", "connect_fail"]);
+  assert.equal(reduceSession(failed, "speech_end").status, "processing");
+});

@@ -62,7 +62,7 @@ func Feed(sessionID string, pcm []byte) {
 		"language":   "",
 		"append":     true,
 		"final":      false,
-	}, 20*time.Second, "partial", "error")
+	}, 2*time.Second, "partial", "error")
 	log.Printf("event=partial ms=%d bytes=%d err=%t", time.Since(started).Milliseconds(), len(pcm), err != nil)
 }
 
@@ -87,7 +87,7 @@ func RunTurn(sessionID string, pcm []byte, appendAudio bool, emit func(AudioChun
 		"language":   "",
 		"append":     appendAudio,
 		"final":      true,
-	}, 45*time.Second, "final", "error")
+	}, 12*time.Second, "final", "error")
 	asrMs := time.Since(asrStarted).Milliseconds()
 	if err != nil {
 		log.Printf("event=turn asr_ms=%d err=asr", asrMs)
@@ -96,16 +96,8 @@ func RunTurn(sessionID string, pcm []byte, appendAudio bool, emit func(AudioChun
 	final := messages[len(messages)-1]
 	text, _ := final["text"].(string)
 	if strings.TrimSpace(text) == "" {
-		if pcmDurationMs(pcm) < 400 && !appendAudio {
-			log.Printf("event=turn asr_ms=%d empty=1 total_ms=%d", asrMs, time.Since(started).Milliseconds())
-			return nil
-		}
-		heard, _ := final["language"].(string)
-		line := presenceLine(heard)
-		log.Printf("event=turn asr_ms=%d presence=1 total_ms=%d", asrMs, time.Since(started).Milliseconds())
-		err := speakLine(sessionID, line, heard, started, emit)
-		warmAck(sessionID, heard)
-		return err
+		log.Printf("event=turn asr_ms=%d empty=1 pcm_ms=%d total_ms=%d", asrMs, pcmDurationMs(pcm), time.Since(started).Milliseconds())
+		return nil
 	}
 	detected, _ := final["language"].(string)
 	policy := policyFor(sessionID)

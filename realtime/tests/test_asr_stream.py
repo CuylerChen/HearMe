@@ -35,6 +35,16 @@ class ASRStreamFallbackTest(unittest.TestCase):
         self.assertEqual(session.text, "今天")
         self.assertEqual(model.calls, 1)
 
+    def test_finish_transcribes_even_if_partial_text_exists(self):
+        model = FakeTransformersModel()
+        session = StreamingSession(model, "Chinese")
+        session.start()
+        session.text = "旧内容"
+        session.push_pcm16(np.zeros(16000, dtype=np.int16))
+        session.finish()
+        self.assertEqual(session.text, "今天")
+        self.assertEqual(model.calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
