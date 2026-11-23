@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 
 from workers.cancel import CancelSet
 from workers.common import model_dir, sock_path
-from workers.persona import Talk, sample_kwargs, strip_think
+from workers.persona import Talk, load_thread, sample_kwargs, strip_think
 from workers.sockjson import serve
 from workers.splitter import push_token
 
@@ -80,6 +80,8 @@ def generate(message, send) -> None:
     persona = bool(message.get("persona", True))
     session_id = message.get("session_id", "")
     talk = _talk(session_id) if persona and session_id else Talk()
+    if persona:
+        load_thread(talk, message.get("history"), message.get("said"))
     listener = _listener(message)
     if persona:
         talk.choose(text)
@@ -123,10 +125,13 @@ def generate(message, send) -> None:
         spoken.append(tail)
         send({"type": "sentence", "request_id": request_id, "text": tail, "seq": seq})
         seq += 1
-    if persona and session_id and spoken and CANCEL.should_emit(request_id):
-        reply = "".join(spoken)
-        talk.add(text, reply)
-        talk.note_reply(reply)
+    if persona and session_id and text:
+        if spoken and CANCEL.should_emit(request_id):
+            reply = "".join(spoken)
+            talk.add(text, reply)
+            talk.note_reply(reply)
+        else:
+            talk.note_user(text)
     if CANCEL.should_emit(request_id):
         send({"type": "done", "request_id": request_id})
     else:

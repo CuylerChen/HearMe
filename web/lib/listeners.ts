@@ -116,6 +116,12 @@ export function listenerFor(id: string) {
   return LISTENERS.find((item) => item.id === id) || LISTENERS[0];
 }
 
+export function listenerForCall(savedId: string, assignedId: string) {
+  if (LISTENERS.some((item) => item.id === savedId)) return listenerFor(savedId);
+  if (LISTENERS.some((item) => item.id === assignedId)) return listenerFor(assignedId);
+  return listenerFor(assignListener(assignedId || "hearme"));
+}
+
 export function assignListener(userId: string) {
   let n = 0;
   for (const ch of userId) n = (n + ch.charCodeAt(0)) % LISTENERS.length;

@@ -59,6 +59,8 @@ type Server struct {
 	OnStyle     func(sessionID string, style TurnStyle)
 	OnForget    func(sessionID string)
 	OnFeed      func(sessionID string, pcm []byte)
+	OnVAD       func(sessionID string, pcm []byte) []map[string]any
+	OnWarm      func(speaker, language string)
 }
 
 func New() *Server {
@@ -97,6 +99,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}", s.sessionStatus)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.deleteSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/partial", s.partial)
+	mux.HandleFunc("POST /v1/sessions/{id}/vad", s.vad)
+	mux.HandleFunc("POST /v1/sessions/{id}/warmup", s.warmup)
 	mux.HandleFunc("POST /v1/sessions/{id}/turns", s.turn)
 	mux.HandleFunc("POST /v1/sessions/{id}/interrupt", s.interrupt)
 	return mux
@@ -113,10 +117,10 @@ func (s *Server) languages(w http.ResponseWriter, _ *http.Request) {
 	items := make([]map[string]string, 0, 6)
 	for _, code := range language.LaunchCodes() {
 		items = append(items, map[string]string{
-			"code":            string(code),
-			"model_language":  language.ModelName(code),
-			"quality_status":  "testing",
-			"conversation":    "auto",
+			"code":           string(code),
+			"model_language": language.ModelName(code),
+			"quality_status": "testing",
+			"conversation":   "auto",
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -131,7 +135,7 @@ func (s *Server) voices(w http.ResponseWriter, _ *http.Request) {
 	langs := make([]map[string]any, 0, 6)
 	for _, code := range language.LaunchCodes() {
 		langs = append(langs, map[string]any{
-			"language_code": string(code),
+			"language_code":  string(code),
 			"quality_status": "testing",
 			"enabled":        false,
 		})
@@ -215,6 +219,54 @@ func (s *Server) partial(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) vad(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.get(id) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
+		return
+	}
+	var req struct {
+		PCM string `json:"pcm16k_b64"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_json"})
+		return
+	}
+	pcm, err := base64.StdEncoding.DecodeString(req.PCM)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_pcm"})
+		return
+	}
+	events := []map[string]any{}
+	if s.OnVAD != nil && len(pcm) > 0 {
+		events = s.OnVAD(id, pcm)
+		if events == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "voice_unavailable"})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *Server) warmup(w http.ResponseWriter, r *http.Request) {
+	if s.get(r.PathValue("id")) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
+		return
+	}
+	var req struct {
+		Speaker  string `json:"speaker"`
+		Language string `json:"language"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_json"})
+		return
+	}
+	if s.OnWarm != nil {
+		s.OnWarm(req.Speaker, req.Language)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.get(id) == nil {
@@ -232,13 +284,13 @@ func (s *Server) turn(w http.ResponseWriter, r *http.Request) {
 		VoiceKey     string `json:"voice_key"`
 		ListenMore   *bool  `json:"listen_more"`
 		AskQuestions *bool  `json:"ask_questions"`
-		Short         bool   `json:"short"`
-		Gentle        *bool  `json:"gentle"`
-		ListenerID    string `json:"listener_id"`
-		ListenerName  string `json:"listener_name"`
-		Manner        string `json:"manner"`
-		SpeakerZh     string `json:"speaker_zh"`
-		SpeakerEn     string `json:"speaker_en"`
+		Short        bool   `json:"short"`
+		Gentle       *bool  `json:"gentle"`
+		ListenerID   string `json:"listener_id"`
+		ListenerName string `json:"listener_name"`
+		Manner       string `json:"manner"`
+		SpeakerZh    string `json:"speaker_zh"`
+		SpeakerEn    string `json:"speaker_en"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_json"})
@@ -382,13 +434,13 @@ func sessionJSON(view *sessionView) map[string]any {
 		current = view.Current
 	}
 	return map[string]any{
-		"session_id":                     view.ID,
-		"state":                          view.State,
-		"conversation_language_mode":     view.Mode,
-		"preferred_conversation_locale":  preferred,
-		"current_locale":                 current,
-		"provider":                       view.Provider,
-		"elapsed_ms":                     time.Since(view.Created).Milliseconds(),
+		"session_id":                    view.ID,
+		"state":                         view.State,
+		"conversation_language_mode":    view.Mode,
+		"preferred_conversation_locale": preferred,
+		"current_locale":                current,
+		"provider":                      view.Provider,
+		"elapsed_ms":                    time.Since(view.Created).Milliseconds(),
 	}
 }
 

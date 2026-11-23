@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type Style struct {
 	Manner       string
 	SpeakerZh    string
 	SpeakerEn    string
+	Speaker      string
 }
 
 type Message map[string]any
@@ -42,8 +44,8 @@ var (
 )
 
 var (
-	policyMu  sync.Mutex
-	policies    = map[string]*language.Policy{}
+	policyMu      sync.Mutex
+	policies      = map[string]*language.Policy{}
 	generations   sync.Map
 	activeRequest sync.Map
 )
@@ -52,7 +54,8 @@ func Feed(sessionID string, pcm []byte) {
 	if len(pcm) == 0 || strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	_, _ = exchange(sock("asr"), Message{
+	started := time.Now()
+	_, err := exchange(sock("asr"), Message{
 		"type":       "audio",
 		"session_id": sessionID,
 		"pcm16k_b64": base64.StdEncoding.EncodeToString(pcm),
@@ -60,6 +63,7 @@ func Feed(sessionID string, pcm []byte) {
 		"append":     true,
 		"final":      false,
 	}, 20*time.Second, "partial", "error")
+	log.Printf("event=partial ms=%d bytes=%d err=%t", time.Since(started).Milliseconds(), len(pcm), err != nil)
 }
 
 func Run(sessionID string, pcm []byte, emit func(AudioChunk) error) error {
@@ -75,6 +79,7 @@ func RunTurn(sessionID string, pcm []byte, appendAudio bool, emit func(AudioChun
 	}
 	started := time.Now()
 	generation := nextGeneration(sessionID)
+	asrStarted := time.Now()
 	messages, err := exchange(sock("asr"), Message{
 		"type":       "audio",
 		"session_id": sessionID,
@@ -83,13 +88,24 @@ func RunTurn(sessionID string, pcm []byte, appendAudio bool, emit func(AudioChun
 		"append":     appendAudio,
 		"final":      true,
 	}, 45*time.Second, "final", "error")
+	asrMs := time.Since(asrStarted).Milliseconds()
 	if err != nil {
+		log.Printf("event=turn asr_ms=%d err=asr", asrMs)
 		return err
 	}
 	final := messages[len(messages)-1]
 	text, _ := final["text"].(string)
 	if strings.TrimSpace(text) == "" {
-		return nil
+		if pcmDurationMs(pcm) < 400 && !appendAudio {
+			log.Printf("event=turn asr_ms=%d empty=1 total_ms=%d", asrMs, time.Since(started).Milliseconds())
+			return nil
+		}
+		heard, _ := final["language"].(string)
+		line := presenceLine(heard)
+		log.Printf("event=turn asr_ms=%d presence=1 total_ms=%d", asrMs, time.Since(started).Milliseconds())
+		err := speakLine(sessionID, line, heard, started, emit)
+		warmAck(sessionID, heard)
+		return err
 	}
 	detected, _ := final["language"].(string)
 	policy := policyFor(sessionID)
@@ -101,15 +117,92 @@ func RunTurn(sessionID string, pcm []byte, appendAudio bool, emit func(AudioChun
 	requestID := sessionID + "-" + started.Format("150405.000")
 	activeRequest.Store(sessionID, requestID)
 	defer activeRequest.Delete(sessionID)
-	return speakAsReady(sessionID, requestID, text, replyLanguage, string(locale), styleFor(sessionID), generation, started, emit)
+	var first time.Time
+	wrapped := func(chunk AudioChunk) error {
+		if first.IsZero() && len(chunk.PCM) > 0 {
+			first = time.Now()
+		}
+		return emit(chunk)
+	}
+	reply, err := speakAsReady(sessionID, requestID, text, replyLanguage, string(locale), styleFor(sessionID), generation, started, wrapped)
+	rememberExchange(sessionID, text, reply)
+	warmAck(sessionID, replyLanguage)
+	firstMs := int64(0)
+	if !first.IsZero() {
+		firstMs = first.Sub(started).Milliseconds()
+	}
+	log.Printf("event=turn asr_ms=%d first_ms=%d total_ms=%d err=%t", asrMs, firstMs, time.Since(started).Milliseconds(), err != nil)
+	return err
 }
 
-func speakAsReady(sessionID, requestID, text, replyLanguage, locale string, style Style, generation int, started time.Time, emit func(AudioChunk) error) error {
-	conn, err := net.DialTimeout("unix", sock("llm"), 5*time.Second)
-	if err != nil {
+func presenceLine(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "english", "en":
+		return "I'm here."
+	case "japanese", "ja":
+		return "いるよ。"
+	case "korean", "ko":
+		return "여기 있어."
+	case "spanish", "es":
+		return "Estoy aquí."
+	case "french", "fr":
+		return "Je suis là."
+	default:
+		return "我在。"
+	}
+}
+
+func speakLine(sessionID, line, language string, started time.Time, emit func(AudioChunk) error) error {
+	speaker := speakerForCall(sessionID, language)
+	raw, sampleRate, err := synthesize(sessionID+"-presence", sessionID, line, language, speaker, 0)
+	if err != nil || len(raw) == 0 {
 		return err
 	}
+	return emit(AudioChunk{
+		SampleRate: sampleRate,
+		LatencyMs:  int(time.Since(started).Milliseconds()),
+		PCM:        raw,
+	})
+}
+
+func playAck(sessionID, language string, started time.Time, emit func(AudioChunk) error) {
+	speaker := speakerForCall(sessionID, language)
+	pcm, rate, ok := ackFor(speaker, language)
+	if !ok || len(pcm) == 0 {
+		return
+	}
+	_ = emit(AudioChunk{
+		SampleRate: rate,
+		LatencyMs:  int(time.Since(started).Milliseconds()),
+		PCM:        pcm,
+	})
+}
+
+func WarmSpeaker(speaker, language string) {
+	if strings.TrimSpace(speaker) == "" {
+		return
+	}
+	if _, _, ok := ackFor(speaker, language); ok {
+		return
+	}
+	go func() {
+		raw, rate, err := synthesize("warm-"+speaker, "warm", ackText(language), ackLanguage(language), speaker, 0)
+		if err != nil || len(raw) == 0 {
+			log.Printf("event=ack_warm speaker=%s err=1", speaker)
+			return
+		}
+		storeAck(speaker, language, raw, rate)
+		log.Printf("event=ack_warm speaker=%s bytes=%d", speaker, len(raw))
+	}()
+}
+
+func speakAsReady(sessionID, requestID, text, replyLanguage, locale string, style Style, generation int, started time.Time, emit func(AudioChunk) error) (string, error) {
+	conn, err := net.DialTimeout("unix", sock("llm"), 5*time.Second)
+	if err != nil {
+		return "", err
+	}
 	defer conn.Close()
+	history, said := priorContext(sessionID)
 	if err := writeMsg(conn, Message{
 		"type":           "generate",
 		"request_id":     requestID,
@@ -117,6 +210,8 @@ func speakAsReady(sessionID, requestID, text, replyLanguage, locale string, styl
 		"text":           text,
 		"language":       replyLanguage,
 		"persona":        true,
+		"history":        history,
+		"said":           said,
 		"max_new_tokens": 32,
 		"voice_key":      style.VoiceKey,
 		"listen_more":    style.ListenMore,
@@ -127,7 +222,7 @@ func speakAsReady(sessionID, requestID, text, replyLanguage, locale string, styl
 		"listener_name":  style.ListenerName,
 		"manner":         style.Manner,
 	}); err != nil {
-		return err
+		return "", err
 	}
 	_ = conn.SetDeadline(time.Now().Add(45 * time.Second))
 	sentences := make(chan string, 8)
@@ -155,18 +250,17 @@ func speakAsReady(sessionID, requestID, text, replyLanguage, locale string, styl
 	}()
 	seq := 0
 	var first time.Time
+	var spokenLines []string
 	for sentence := range sentences {
+		spokenLines = append(spokenLines, sentence)
 		if currentGeneration(sessionID) != generation {
-			return nil
+			return strings.Join(spokenLines, ""), nil
 		}
 		spoken := language.SpeechLanguage(sentence, replyLanguage)
-		speaker := style.SpeakerZh
-		if spoken == "English" || spoken == "French" || spoken == "Spanish" {
-			speaker = style.SpeakerEn
-		}
+		speaker := speakerForCall(sessionID, spoken)
 		raw, sampleRate, err := synthesize(requestID, sessionID, sentence, spoken, speaker, seq)
 		if err != nil {
-			return err
+			return strings.Join(spokenLines, ""), err
 		}
 		seq++
 		if len(raw) == 0 {
@@ -181,10 +275,10 @@ func speakAsReady(sessionID, requestID, text, replyLanguage, locale string, styl
 			LatencyMs:  int(first.Sub(started).Milliseconds()),
 			PCM:        raw,
 		}); err != nil {
-			return err
+			return strings.Join(spokenLines, ""), err
 		}
 	}
-	return <-readErr
+	return strings.Join(spokenLines, ""), <-readErr
 }
 
 func synthesize(requestID, sessionID, sentence, replyLanguage, voiceKey string, seq int) ([]byte, int, error) {
@@ -268,12 +362,108 @@ func readMsg(reader *bufio.Reader) (Message, error) {
 }
 
 func RememberStyle(sessionID string, style Style) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
 	if style.VoiceKey == "" {
 		style.VoiceKey = "gentle"
 	}
 	styleMu.Lock()
+	defer styleMu.Unlock()
+	if existing, ok := styles[sessionID]; ok && existing.ListenerID != "" {
+		return
+	}
 	styles[sessionID] = style
-	styleMu.Unlock()
+}
+
+type ackClip struct {
+	pcm  []byte
+	rate int
+}
+
+var ackCache sync.Map
+
+func ackKey(speaker, language string) string {
+	return speaker + "|" + ackLanguage(language)
+}
+
+func ackLanguage(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "english", "en", "french", "fr", "spanish", "es":
+		return "English"
+	default:
+		return "Chinese"
+	}
+}
+
+func ackText(language string) string {
+	if ackLanguage(language) == "English" {
+		return "Mm."
+	}
+	return "嗯。"
+}
+
+func storeAck(speaker, language string, pcm []byte, rate int) {
+	if speaker == "" || len(pcm) == 0 {
+		return
+	}
+	ackCache.Store(ackKey(speaker, language), ackClip{pcm: append([]byte(nil), pcm...), rate: rate})
+}
+
+func ackFor(speaker, language string) ([]byte, int, bool) {
+	value, ok := ackCache.Load(ackKey(speaker, language))
+	if !ok {
+		return nil, 0, false
+	}
+	clip := value.(ackClip)
+	return clip.pcm, clip.rate, true
+}
+
+func warmAck(sessionID, language string) {
+	speaker := speakerForCall(sessionID, language)
+	if speaker == "" {
+		return
+	}
+	if _, _, ok := ackFor(speaker, language); ok {
+		return
+	}
+	go func() {
+		raw, rate, err := synthesize("warm-"+speaker, sessionID, ackText(language), ackLanguage(language), speaker, 0)
+		if err != nil || len(raw) == 0 {
+			log.Printf("event=ack_warm speaker=%s err=1", speaker)
+			return
+		}
+		storeAck(speaker, language, raw, rate)
+		log.Printf("event=ack_warm speaker=%s bytes=%d", speaker, len(raw))
+	}()
+}
+
+func knownSpeaker(name string) bool {
+	switch name {
+	case "Serena", "Vivian", "Uncle_Fu", "Dylan", "Eric", "Aiden", "Ryan":
+		return true
+	default:
+		return false
+	}
+}
+
+func speakerForCall(sessionID, spoken string) string {
+	styleMu.Lock()
+	defer styleMu.Unlock()
+	style := styles[sessionID]
+	if knownSpeaker(style.Speaker) {
+		return style.Speaker
+	}
+	speaker := style.SpeakerZh
+	if (spoken == "English" || spoken == "French" || spoken == "Spanish") && knownSpeaker(style.SpeakerEn) {
+		speaker = style.SpeakerEn
+	}
+	if !knownSpeaker(speaker) {
+		speaker = "Serena"
+	}
+	style.Speaker = speaker
+	styles[sessionID] = style
+	return speaker
 }
 
 func styleFor(sessionID string) Style {
@@ -286,11 +476,105 @@ func styleFor(sessionID string) Style {
 	return style
 }
 
+func ProbeSpeech(sessionID string, pcm []byte) []map[string]any {
+	if strings.TrimSpace(sessionID) == "" || len(pcm) == 0 {
+		return []map[string]any{}
+	}
+	messages, err := exchange(sock("vad"), Message{
+		"type":       "audio",
+		"session_id": sessionID,
+		"pcm16k_b64": base64.StdEncoding.EncodeToString(pcm),
+	}, 2*time.Second, "done", "error")
+	if err != nil && len(messages) == 0 {
+		return nil
+	}
+	events := []map[string]any{}
+	for _, msg := range messages {
+		kind, _ := msg["type"].(string)
+		if kind != "speech_start" && kind != "speech_end" {
+			continue
+		}
+		events = append(events, map[string]any{"type": kind, "t_ms": msg["t_ms"]})
+	}
+	return events
+}
+
+func resetSpeech(sessionID string) {
+	conn, err := net.DialTimeout("unix", sock("vad"), 200*time.Millisecond)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = writeMsg(conn, Message{"type": "reset", "session_id": sessionID})
+}
+
+type callThread struct {
+	turns []map[string]string
+	said  []string
+}
+
+var (
+	threadMu sync.Mutex
+	threads  = map[string]*callThread{}
+)
+
+func priorContext(sessionID string) ([]map[string]string, []string) {
+	threadMu.Lock()
+	defer threadMu.Unlock()
+	thread := threads[sessionID]
+	if thread == nil {
+		return []map[string]string{}, []string{}
+	}
+	turns := append([]map[string]string{}, thread.turns...)
+	said := append([]string{}, thread.said...)
+	return turns, said
+}
+
+func rememberExchange(sessionID, userText, reply string) {
+	userText = strings.TrimSpace(userText)
+	reply = strings.TrimSpace(reply)
+	if sessionID == "" || (userText == "" && reply == "") {
+		return
+	}
+	threadMu.Lock()
+	defer threadMu.Unlock()
+	thread := threads[sessionID]
+	if thread == nil {
+		thread = &callThread{}
+		threads[sessionID] = thread
+	}
+	if userText != "" {
+		clip := []rune(userText)
+		if len(clip) > 180 {
+			clip = clip[:180]
+		}
+		thread.said = append(thread.said, string(clip))
+		if len(thread.said) > 24 {
+			thread.said = thread.said[len(thread.said)-24:]
+		}
+		thread.turns = append(thread.turns, map[string]string{"role": "user", "content": userText})
+	}
+	if reply != "" {
+		thread.turns = append(thread.turns, map[string]string{"role": "assistant", "content": reply})
+	}
+	if len(thread.turns) > 48 {
+		thread.turns = thread.turns[len(thread.turns)-48:]
+	}
+}
+
+func dropThread(sessionID string) {
+	threadMu.Lock()
+	delete(threads, sessionID)
+	threadMu.Unlock()
+}
+
 func Forget(sessionID string) {
 	Reset(sessionID)
 	styleMu.Lock()
 	delete(styles, sessionID)
 	styleMu.Unlock()
+	dropThread(sessionID)
+	resetSpeech(sessionID)
 	conn, err := net.DialTimeout("unix", sock("llm"), 200*time.Millisecond)
 	if err != nil {
 		return

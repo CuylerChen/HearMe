@@ -50,6 +50,27 @@ class ListeningEngineTest(unittest.TestCase):
             self.assertNotIn("Empathize", guide)
             self.assertNotIn("不要提问", guide)
 
+    def test_instruction_comforts_stress_and_stays_with_loneliness(self):
+        state = ListeningState()
+        state.choose("一个人在家，心里空空的。")
+        text = state.instruction()
+        self.assertIn("倾听者", text)
+        self.assertIn("陪伴者", text)
+        self.assertIn("压力", text)
+        self.assertIn("孤独", text)
+        self.assertIn("失落", text)
+        self.assertIn("舒适", text)
+        self.assertIn("还有人在陪", text)
+
+    def test_instruction_listens_and_does_not_invent(self):
+        state = ListeningState()
+        state.choose("今天工作特别累，领导一直在批评我。")
+        text = state.instruction()
+        self.assertIn("倾听", text)
+        self.assertIn("陪伴", text)
+        self.assertIn("没说过", text)
+        self.assertNotIn("连上前面说过的一件事", text)
+
     def test_prompt_bans_template_empathy(self):
         state = ListeningState()
         state.choose("今天工作特别累，领导一直在批评我。")

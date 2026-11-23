@@ -19,11 +19,14 @@ CORE_PROMPT = (
 )
 
 SPOKEN = (
-    "你在打电话。用口语，亲切，像旁边的人随口接一句。"
-    "不记得上一次通话。这场谈话结束前，前面说过的事都还在，不能后面就把前面忘掉。"
-    "先接住最后这一句，并带上一个前面已经出现的具体事情。不要另起话题，不要问好，不要自我介绍。"
-    "不要编他没说过的事。不要给建议，除非他要。不是心理治疗。"
-    "只说一两句就停。"
+    "你在打电话。你主要是一位倾听者和陪伴者。"
+    "你在帮他缓解压力和孤独，让失落的人能松一口气，让压力大的人感到舒适，让孤独的人感到还有人在陪着。"
+    "用口语，亲切，直接回应他刚说的内容，像朋友在电话里接话，不要只重复他的原话。"
+    "不记得上一次通话。这一场还没结束，前面他说过的话都还在。"
+    "顺着这场谈话往下接。不要另起话题，不要问好，不要自我介绍。"
+    "可以用他已经说过的事。对方没说过的人、事、原因、感受、时间和结果，都不能编。"
+    "不要给建议，除非他要。不是心理治疗。"
+    "说一两句完整的话，把这句话说完再停。"
 )
 
 
@@ -35,14 +38,18 @@ class Talk:
         self.said: List[str] = []
         self.listening = ListeningState()
 
-    def add(self, user_text: str, assistant_text: str) -> None:
-        clip = " ".join(user_text.split())[:160]
+    def note_user(self, user_text: str) -> None:
+        clip = " ".join((user_text or "").split())[:160]
         if clip:
             self.said.append(clip)
-            self.said = self.said[-8:]
+            self.said = self.said[-24:]
+
+    def add(self, user_text: str, assistant_text: str) -> None:
+        self.note_user(user_text)
         self.turns.append({"role": "user", "content": user_text})
         self.turns.append({"role": "assistant", "content": assistant_text})
-        self.turns = self.turns[-16:]
+        self.turns = self.turns[-48:]
+        self.said = self.said[-24:]
 
     def clear(self) -> None:
         self.turns = []
@@ -60,6 +67,21 @@ class Talk:
 
     def messages(self, text: str, language: str, style: Optional[dict], listener: Optional[dict] = None) -> List[dict]:
         return build_messages(text, language, style, self.turns, self.said, listener)
+
+
+def load_thread(talk: Talk, history, said) -> None:
+    if isinstance(history, list):
+        turns = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+                turns.append({"role": role, "content": content})
+        talk.turns = turns[-48:]
+    if isinstance(said, list):
+        talk.said = [str(item).strip() for item in said if str(item).strip()][-24:]
 
 
 def build_messages(
@@ -87,7 +109,7 @@ def build_messages(
         listener.get("strategy") or "",
     ]
     if said:
-        rules.append("这场谈话还没结束。你记得对方已经说过：" + "；".join(said) + "。回应必须连上其中一件具体的事，不要把前面的话忘掉。")
+        rules.append("这场谈话还在。前面说过的还在。你记得对方已经说过：" + "；".join(said) + "。接这一句时用得上就用，没说过的不能编。")
     else:
         rules.append("这是这场谈话的第一句。接住这一句，不要问好，不要自我介绍。")
     if style.get("listen_more", True):
@@ -104,10 +126,7 @@ def build_messages(
         rules.append("语气软，可以有「嗯」「听起来」这种口头语。")
     messages = [{"role": "system", "content": "".join(rules)}]
     messages.extend(history)
-    current = text
-    if said:
-        current = text + "\n（这场谈话里已经说过：" + "；".join(said[-4:]) + "。接这一句时要带上其中一件具体的事。）"
-    messages.append({"role": "user", "content": current})
+    messages.append({"role": "user", "content": text})
     return messages
 
 

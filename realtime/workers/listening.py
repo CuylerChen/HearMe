@@ -66,11 +66,11 @@ TEMPLATE_MARKS = (
 )
 
 MODE_TOKENS = {
-    "empathize": 36,
-    "listen": 42,
-    "explore": 42,
-    "support": 64,
-    "gentle_presence": 24,
+    "empathize": 64,
+    "listen": 64,
+    "explore": 48,
+    "support": 56,
+    "gentle_presence": 28,
     "safety": 80,
 }
 
@@ -147,7 +147,10 @@ class ListeningState:
         banned = "、".join(self.recent_patterns)
         extra = f"不要再用这些说法：{banned}。" if banned else ""
         return (
-            "这一通电话里前面的具体事情还在。先让对方感到被听见，并连上前面说过的一件事。"
+            "你主要是一位倾听者和陪伴者。先让对方感到被听见。不要急着解决。"
+            "帮他缓解压力和孤独，让失落的人松一口气，让压力大的人感到舒适，让孤独的人感到还有人在陪着。"
+            "这场谈话里他前面说过的事还在。接这一句时不要把前面丢掉。"
+            "只能使用他已经说过的事。他没说过的人、事、原因、感受和结果，都不能编。"
             "不要每次都用 It sounds like、What I'm hearing is、I understand how you feel、"
             "Thank you for sharing、听起来你、我理解你的感受。"
             + line

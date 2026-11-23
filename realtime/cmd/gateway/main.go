@@ -19,6 +19,8 @@ func main() {
 	srv.OnInterrupt = pipeline.Interrupt
 	srv.OnForget = pipeline.Forget
 	srv.OnFeed = pipeline.Feed
+	srv.OnVAD = pipeline.ProbeSpeech
+	srv.OnWarm = pipeline.WarmSpeaker
 	srv.OnStyle = func(sessionID string, style api.TurnStyle) {
 		pipeline.RememberStyle(sessionID, pipeline.Style{
 			VoiceKey:     style.VoiceKey,

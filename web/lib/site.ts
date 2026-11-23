@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import { guides, promoteLlmsBlock } from "./promote";
 
 export const siteName = "HearMe";
 export const siteTagline = "Your private space to be heard.";
@@ -77,6 +78,13 @@ export function homeJsonLd(origin: string) {
         ],
         inLanguage: [...languageCodes],
       },
+      ...guides.map((guide) => ({
+        "@type": "WebPage",
+        name: guide.h1,
+        url: `${origin}${guide.path}`,
+        inLanguage: guide.locale,
+        description: guide.answer,
+      })),
       {
         "@type": "FAQPage",
         "@id": `${origin}/#faq`,
@@ -94,6 +102,8 @@ export function homeJsonLd(origin: string) {
 export function llmsText(origin: string) {
   const pages = [
     ["Home", "/"],
+    ["Someone to talk to", "/listen"],
+    ["想找人说说话", "/zh"],
     ["Sign up", "/signup"],
     ["Log in", "/login"],
     ["Privacy", "/privacy"],
@@ -127,5 +137,6 @@ export function llmsText(origin: string) {
     "",
     `Machine-readable summary: ${origin}/llms.txt`,
     "",
+    promoteLlmsBlock(origin),
   ].join("\n");
 }

@@ -291,6 +291,11 @@ input, select {
   font-family: var(--sans); font-weight: 680; letter-spacing: -0.045em; line-height: 1.05;
 }
 .market h1 { font-size: clamp(2.4rem, 10vw, 4.4rem); margin: 0 0 14px; max-width: 12ch; }
+.guide .market-hero { grid-template-columns: 1fr; }
+.guide h1 { max-width: 16em; font-size: clamp(2rem, 6vw, 3.4rem); }
+.guide .cite { font-size: 1.12rem; line-height: 1.6; max-width: 40rem; margin: 0 0 22px; }
+.guide-nav { display: flex; align-items: center; gap: 14px; }
+.guide-nav a { color: #4e685e; text-decoration: none; font-weight: 640; }
 .market .lede { font-size: 1.05rem; margin: 0 0 22px; }
 .market .button, .home-screen .button, .thanks .button, .auth-main .button, .mood-actions .button {
   background: #4e685e; box-shadow: none; font-weight: 620;
@@ -330,6 +335,12 @@ input, select {
 .faq p { margin: 0; color: var(--muted); line-height: 1.5; }
 .market-foot a { color: #4e685e; margin-left: 14px; }
 .market-foot span:last-child a:first-child { margin-left: 0; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: flex-end; }
+.foot-links a { margin-left: 0; }
+@media (max-width: 720px) {
+  .market-foot { flex-direction: column; align-items: flex-start; }
+  .foot-links { justify-content: flex-start; }
+}
 
 .auth-aside { display: none; }
 .auth-main { min-height: 100vh; padding: 28px 22px 40px; }

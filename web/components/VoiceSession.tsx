@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { preparedContext, unlockAudio } from "@/lib/audio-unlock";
 import { base64ToPcm, downsampleTo16k, pcmToBase64 } from "@/lib/pcm";
 import { reduceSession, type SessionEvent, type SessionState } from "@/lib/session-machine";
-import { randomListener, type Listener } from "@/lib/listeners";
+import { listenerForCall, listenerName, type Listener } from "@/lib/listeners";
 import { useApp } from "./AppState";
 
 type Hold = {
@@ -28,10 +28,15 @@ type Hold = {
   speechMs: number;
   ignoreUntil: number;
   listenerId: string;
+  sampleRate: number;
+  vadQueued: Float32Array[];
+  vadBusy: boolean;
+  vadFailed: boolean;
+  inSpeech: boolean;
 };
 
 export function VoiceSession() {
-  const { t, user } = useApp();
+  const { t, user, locale } = useApp();
   const router = useRouter();
   const [state, setState] = useState<SessionState>({ status: "connecting", muted: false });
   const [notice, setNotice] = useState("");
@@ -39,7 +44,7 @@ export function VoiceSession() {
   const [hearing, setHearing] = useState(false);
   const [needsTap, setNeedsTap] = useState(false);
   const [person, setPerson] = useState<Listener | null>(null);
-  const voiceName = user ? { gentle: t.gentle, calm: t.calm, warm: t.warm, thoughtful: t.thoughtful }[user.preferences.voiceKey] : t.gentle;
+  const voiceName = person ? listenerName(person.id, locale) : t.gentle;
   const hold = useRef<Hold>({
     status: "connecting",
     muted: false,
@@ -60,6 +65,11 @@ export function VoiceSession() {
     speechMs: 0,
     ignoreUntil: 0,
     listenerId: "",
+    sampleRate: 48000,
+    vadQueued: [],
+    vadBusy: false,
+    vadFailed: false,
+    inSpeech: false,
   });
 
   function dispatch(event: SessionEvent) {
@@ -111,18 +121,31 @@ export function VoiceSession() {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
-    const listener = randomListener();
+    const listener = listenerForCall(hold.current.listenerId, user?.preferences.listenerId || user?.id || "");
     hold.current.listenerId = listener.id;
     setPerson(listener);
-    const created = await fetch("/api/voice/sessions", { method: "POST" });
-    if (!created.ok) {
-      dispatch("connect_fail");
-      setNotice(t.serviceUnavailable);
-      stream.getTracks().forEach((track) => track.stop());
-      return;
+    let sessionId = hold.current.sessionId;
+    if (sessionId) {
+      const existing = await fetch(`/api/voice/sessions/${sessionId}`).catch(() => null);
+      if (!existing || !existing.ok) sessionId = "";
     }
-    const body = await created.json();
-    hold.current.sessionId = body.session_id;
+    if (!sessionId) {
+      const created = await fetch("/api/voice/sessions", { method: "POST" });
+      if (!created.ok) {
+        dispatch("connect_fail");
+        setNotice(t.serviceUnavailable);
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      const body = await created.json();
+      sessionId = body.session_id;
+    }
+    hold.current.sessionId = sessionId;
+    fetch(`/api/voice/sessions/${sessionId}/warmup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ speaker: listener.speakerZh, language: "Chinese" }),
+    }).catch(() => undefined);
     dispatch("connect_ok");
     await capture(stream);
   }
@@ -148,47 +171,110 @@ export function VoiceSession() {
   }
 
   function onFrame(input: Float32Array, sampleRate: number) {
-    const rms = Math.sqrt(input.reduce((sum, sample) => sum + sample * sample, 0) / input.length);
-    const frameMs = (input.length / sampleRate) * 1000;
+    const frame = new Float32Array(input);
+    const frameMs = (frame.length / sampleRate) * 1000;
     const live = hold.current;
     if (performance.now() < live.ignoreUntil) return;
-    const threshold = live.playing ? 0.08 : 0.02;
-    if (live.muted || live.status === "processing") return;
-    if (rms > threshold) {
+    if (live.muted) return;
+    if (live.status === "processing") {
+      const rms = Math.sqrt(frame.reduce((sum, sample) => sum + sample * sample, 0) / frame.length);
+      if (rms > 0.06) {
+        live.chunks.push(frame);
+        live.speechMs += frameMs;
+        live.speakingFor += frameMs;
+        live.silenceFor = 0;
+        if (live.speakingFor > 420) {
+          interrupt();
+          live.voiced = true;
+          setHearing(true);
+        }
+      }
+      return;
+    }
+    if (live.playing || live.status === "speaking") {
+      if (performance.now() < live.ignoreUntil) return;
+      const rms = Math.sqrt(frame.reduce((sum, sample) => sum + sample * sample, 0) / frame.length);
+      if (rms > 0.14) interrupt();
+      return;
+    }
+    live.sampleRate = sampleRate;
+    live.vadQueued.push(frame);
+    if (queuedMs(live.vadQueued, sampleRate) >= 100) pumpVad();
+    const rms = Math.sqrt(frame.reduce((sum, sample) => sum + sample * sample, 0) / frame.length);
+    if (rms > 0.02) {
       live.silenceFor = 0;
       live.speakingFor += frameMs;
       live.speechMs += frameMs;
-      live.chunks.push(new Float32Array(input));
-      if (live.speakingFor > 280) {
+      live.chunks.push(frame);
+      if (live.speakingFor > 200) {
         if (!live.voiced) setHearing(true);
         live.voiced = true;
-        if (live.playing || live.status === "speaking") interrupt();
-        if (!live.partialBusy && live.speechMs - live.partialAt > 800) {
-          live.partialAt = live.speechMs;
-          sendPartial(merge(live.chunks), sampleRate);
+      }
+      if (live.voiced && !live.partialBusy && live.speechMs - live.partialAt > 800) {
+        live.partialAt = live.speechMs;
+        sendPartial(merge(live.chunks), sampleRate);
+      }
+      return;
+    }
+    live.speakingFor = 0;
+    if (!live.voiced) return;
+    live.silenceFor += frameMs;
+    live.chunks.push(frame);
+    const waitMs = live.inSpeech ? 520 : 420;
+    if (live.silenceFor < waitMs) return;
+    if (live.speechMs >= 450 && live.status === "listening") finishTurn();
+    else dropTurn();
+  }
+
+  function finishTurn() {
+    const live = hold.current;
+    const audio = merge(live.chunks);
+    const sampleRate = live.sampleRate;
+    dropTurn();
+    if (audio.length === 0) return;
+    sendTurn(audio, sampleRate);
+  }
+
+  function dropTurn() {
+    const live = hold.current;
+    live.chunks = [];
+    live.inSpeech = false;
+    live.voiced = false;
+    live.speechMs = 0;
+    live.silenceFor = 0;
+    live.speakingFor = 0;
+    setHearing(false);
+  }
+
+  function pumpVad() {
+    const live = hold.current;
+    if (live.vadBusy || live.vadQueued.length === 0 || !live.sessionId) return;
+    const audio = merge(live.vadQueued);
+    const sampleRate = live.sampleRate;
+    live.vadQueued = [];
+    live.vadBusy = true;
+    const pcm = downsampleTo16k(audio, sampleRate);
+    fetch(`/api/voice/sessions/${live.sessionId}/vad`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pcm16k_b64: pcmToBase64(pcm) }),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("vad");
+      const body = await response.json() as { events?: { type?: string }[] };
+      live.vadFailed = false;
+      for (const event of body.events || []) {
+        if (event.type === "speech_start") live.inSpeech = true;
+        if (event.type === "speech_end") {
+          live.inSpeech = false;
+          if (live.voiced && live.silenceFor >= 400 && live.speechMs >= 450 && live.status === "listening") finishTurn();
         }
       }
-    } else if (live.voiced) {
-      live.silenceFor += frameMs;
-      live.speakingFor = 0;
-      live.chunks.push(new Float32Array(input));
-      if (live.silenceFor > 320 && live.status === "listening" && live.speechMs >= 450) {
-        const audio = merge(live.chunks);
-        live.chunks = [];
-        live.voiced = false;
-        live.speechMs = 0;
-        live.silenceFor = 0;
-        setHearing(false);
-        sendTurn(audio, sampleRate);
-      }
-      if (live.silenceFor > 320 && live.speechMs < 450) {
-        live.chunks = [];
-        live.voiced = false;
-        live.speechMs = 0;
-        live.silenceFor = 0;
-        setHearing(false);
-      }
-    }
+    }).catch(() => {
+      live.vadFailed = true;
+    }).finally(() => {
+      live.vadBusy = false;
+      if (queuedMs(live.vadQueued, live.sampleRate) >= 100) pumpVad();
+    });
   }
 
   function sendPartial(audio: Float32Array, sampleRate: number) {
@@ -238,10 +324,13 @@ export function VoiceSession() {
       setNotice(t.serviceUnavailable);
       return;
     }
+    const context = hold.current.context;
+    if (context && context.state !== "running") await context.resume().catch(() => undefined);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let started = false;
+    let failed = false;
     while (true) {
       const chunk = await reader.read().catch(() => ({ done: true, value: undefined }));
       if (chunk.done) break;
@@ -250,10 +339,17 @@ export function VoiceSession() {
       buffer = lines.pop() || "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        const message = JSON.parse(line) as { type?: string; audio_b64?: string; sample_rate?: number };
+        let message: { type?: string; audio_b64?: string; sample_rate?: number };
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.type === "error") failed = true;
         if (message.type === "audio" && message.audio_b64 && hold.current.context) {
           if (!started) {
             started = true;
+            hold.current.ignoreUntil = performance.now() + 900;
             dispatch("audio_start");
           }
           play(base64ToPcm(message.audio_b64), message.sample_rate || 24000);
@@ -262,6 +358,7 @@ export function VoiceSession() {
     }
     if (!started) {
       dispatch("audio_end");
+      if (failed || hold.current.status === "processing") setNotice(t.missed);
     }
   }
 
@@ -283,7 +380,7 @@ export function VoiceSession() {
       if (hold.current.sources.length === 0) {
         hold.current.playing = false;
         hold.current.nextTime = 0;
-        hold.current.ignoreUntil = performance.now() + 700;
+        hold.current.ignoreUntil = performance.now() + 220;
         hold.current.chunks = [];
         hold.current.voiced = false;
         hold.current.speechMs = 0;
@@ -411,6 +508,11 @@ export function VoiceSession() {
 
 function MicIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4" /></svg>;
+}
+
+function queuedMs(chunks: Float32Array[], sampleRate: number) {
+  const samples = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  return sampleRate > 0 ? (samples / sampleRate) * 1000 : 0;
 }
 
 function merge(chunks: Float32Array[]) {

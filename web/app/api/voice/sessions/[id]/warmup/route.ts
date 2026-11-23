@@ -1,0 +1,16 @@
+import { json, voiceBase, voiceHeaders } from "@/lib/http";
+import { readSessionUser } from "@/lib/store";
+
+export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (!(await readSessionUser(request.headers.get("cookie")))) return json({ error: "unauthorized" }, 401);
+  const { id } = await context.params;
+  const incoming = await request.json().catch(() => ({}));
+  const upstream = await fetch(`${voiceBase()}/v1/sessions/${id}/warmup`, {
+    method: "POST",
+    headers: voiceHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ speaker: incoming.speaker, language: incoming.language || "Chinese" }),
+  }).catch(() => null);
+  if (!upstream) return json({ error: "voice_unavailable" }, 503);
+  if (!upstream.ok && upstream.status !== 204) return json({ error: "voice_unavailable" }, upstream.status);
+  return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+}

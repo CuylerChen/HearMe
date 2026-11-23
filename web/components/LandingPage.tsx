@@ -79,7 +79,7 @@ export function LandingPage() {
       </main>
       <footer className="market-foot">
         <span>HearMe AI. {t.tagline}</span>
-        <span><Link href="/privacy">{t.privacy}</Link> <Link href="/terms">{t.terms}</Link> <Link href="/contact">{t.contact}</Link></span>
+        <span className="foot-links"><Link href="/listen">Someone to talk to</Link><Link href="/zh">想找人说说话</Link><Link href="/privacy">{t.privacy}</Link><Link href="/terms">{t.terms}</Link><Link href="/contact">{t.contact}</Link></span>
       </footer>
     </div>
   );

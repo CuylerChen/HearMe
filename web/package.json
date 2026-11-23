@@ -5,7 +5,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --experimental-strip-types --test lib/session-machine.test.ts lib/privacy-boundary.test.ts lib/listeners.test.ts"
+    "test": "node --experimental-strip-types --test lib/session-machine.test.ts lib/privacy-boundary.test.ts lib/listeners.test.ts lib/promote.test.ts"
   },
   "dependencies": {
     "next": "^15.5.4",
